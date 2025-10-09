@@ -1,67 +1,66 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+from alpha_vantage.timeseries import TimeSeries
+import io
 
-# --- Page Config ---
+# --- 页面基础设置 ---
 st.set_page_config(
-    page_title="Personal Investment Dashboard",
+    page_title="个人投资仪表盘",
     page_icon="📈",
     layout="wide"
 )
 
-# --- Title ---
-st.title("📈 Personal Investment Dashboard")
+# --- 标题 ---
+st.title("📈 个人投资仪表盘 (Alpha Vantage版)")
 
-# --- Sidebar ---
-st.sidebar.header("Enter Your Holdings")
+# --- 从 Streamlit Secrets 获取 API 密钥 ---
+try:
+    av_api_key = st.secrets["alpha_vantage"]["api_key"]
+except KeyError:
+    st.error("错误：请在应用的Secrets中设置您的Alpha Vantage API密钥。")
+    st.stop()
 
-# Ticker input
-ticker_string = st.sidebar.text_input("Stock Tickers (comma-separated)", "MSFT")
+# --- 侧边栏 ---
+st.sidebar.header("输入你的持仓")
+ticker_string = st.sidebar.text_input("股票代码 (用英文逗号隔开)", "IBM,TSLA,MSFT")
 ticker_list = [s.strip().upper() for s in ticker_string.split(',') if s.strip()]
 
-# --- Main Page ---
+# --- 主页面 ---
 if ticker_list:
-    st.header("Stock Price Chart")
-    
-    # Period selection
-    period = st.selectbox(
-        'Select Time Period',
-        ('1mo', '3mo', '6mo', '1y', '2y', '5y', 'max')
-    )
+    st.header("股价走势")
 
+    # Alpha Vantage 初始化
+    ts = TimeSeries(key=av_api_key, output_format='pandas')
+    
     all_data = []
     failed_tickers = []
-
-    # --- NEW: Loop to download one by one ---
-    progress_bar = st.progress(0)
+    
+    progress_bar = st.progress(0, text="正在下载数据...")
     for i, ticker in enumerate(ticker_list):
         try:
-            # Download data for a single ticker
-            data = yf.download(ticker, period=period, progress=False)['Adj Close']
-            if not data.empty:
-                # Rename the series to the ticker name for the legend
-                data.name = ticker
-                all_data.append(data)
-            else:
-                failed_tickers.append(ticker)
+            # 获取日线数据，'compact'表示最近100天的数据
+            data, meta_data = ts.get_daily(symbol=ticker, outputsize='compact')
+            # 我们只需要收盘价
+            close_data = data['4. close']
+            close_data.name = ticker
+            all_data.append(close_data)
         except Exception as e:
             failed_tickers.append(ticker)
         
-        # Update progress bar
-        progress_bar.progress((i + 1) / len(ticker_list))
+        progress_bar.progress((i + 1) / len(ticker_list), text=f"正在下载 {ticker}...")
+    
+    progress_bar.empty()
 
-    progress_bar.empty() # Remove the progress bar after completion
-
-    # --- Combine and display the data ---
     if all_data:
-        # Combine all successful downloads into one DataFrame
+        # 合并所有成功获取的数据
         combined_data = pd.concat(all_data, axis=1)
+        # Alpha Vantage 返回的数据是倒序的，需要反转一下
+        combined_data = combined_data.iloc[::-1]
         st.line_chart(combined_data)
     else:
-        st.error("Could not download any stock data. Please check your network connection or ticker symbols.")
+        st.error("无法下载任何股票数据。请检查代码或API密钥。")
 
-    # --- Show failed tickers ---
     if failed_tickers:
-        st.warning(f"Could not retrieve data for: {', '.join(failed_tickers)}")
+        st.warning(f"无法获取以下股票的数据: {', '.join(failed_tickers)}")
 else:
-    st.info("Please enter at least one stock ticker in the sidebar to begin.")
+    st.info("请在左侧边栏输入至少一个股票代码。")
