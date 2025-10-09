@@ -20,7 +20,7 @@ st.set_page_config(
 SUPPORTED_CURRENCIES = ["USD", "CNY", "EUR", "HKD", "JPY", "GBP"]
 CURRENCY_SYMBOLS = {"USD": "$", "CNY": "¥", "EUR": "€", "HKD": "HK$", "JPY": "¥", "GBP": "£"}
 SESSION_EXPIRATION_DAYS = 7
-
+DATA_REFRESH_INTERVAL_SECONDS = 3600 # 1 hour
 
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state:
@@ -31,6 +31,8 @@ if 'login_step' not in st.session_state:
     st.session_state.login_step = "enter_email"
 if 'display_currency' not in st.session_state:
     st.session_state.display_currency = "USD"
+if 'last_market_data_fetch' not in st.session_state:
+    st.session_state.last_market_data_fetch = 0
 
 # --- 微软 Graph API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
@@ -57,7 +59,7 @@ def get_user_data_from_onedrive():
         content_url = f"{ONEDRIVE_API_URL}:/content"
         resp = requests.get(content_url, headers=headers)
         if resp.status_code == 404:
-            initial_data = {"users": {ADMIN_EMAIL: {"role": "admin", "portfolio": {"stocks": [{"ticker": "TSLA", "quantity": 10}], "cash_accounts": [{"name": "默认现金", "balance": 50000, "currency": "USD"}]}, "transactions": [], "asset_history": []}}, "codes": {}, "sessions": {}}
+            initial_data = {"users": {ADMIN_EMAIL: {"role": "admin", "portfolio": {"stocks": [{"ticker": "TSLA", "quantity": 10, "currency": "USD"}], "cash_accounts": [{"name": "默认现金", "balance": 50000, "currency": "USD"}]}, "transactions": [], "asset_history": []}}, "codes": {}, "sessions": {}}
             save_user_data_to_onedrive(initial_data)
             return initial_data
         resp.raise_for_status()
@@ -116,7 +118,7 @@ def handle_verify_code(email, code):
         return
     if code_info["code"] == code:
         if email not in user_data["users"]:
-            user_data["users"][email] = {"role": "user", "portfolio": {"stocks": [{"ticker": "AAPL", "quantity": 10}, {"ticker": "GOOG", "quantity": 5}], "cash_accounts": [{"name": "美元银行卡", "balance": 10000, "currency": "USD"}, {"name": "人民币支付宝", "balance": 2000, "currency": "CNY"}]}, "transactions": [], "asset_history": []}
+            user_data["users"][email] = {"role": "user", "portfolio": {"stocks": [{"ticker": "AAPL", "quantity": 10, "currency": "USD"}, {"ticker": "GOOG", "quantity": 5, "currency": "USD"}], "cash_accounts": [{"name": "美元银行卡", "balance": 10000, "currency": "USD"}, {"name": "人民币支付宝", "balance": 2000, "currency": "CNY"}]}, "transactions": [], "asset_history": []}
             st.toast("🎉 注册成功！已为您创建新账户。")
         
         token = secrets.token_hex(16)
@@ -130,6 +132,7 @@ def handle_verify_code(email, code):
         st.session_state.user_email = email
         st.session_state.login_step = "logged_in"
         st.query_params["session_token"] = token
+        st.rerun() # 强制刷新以加载仪表盘
     else:
         st.sidebar.error("验证码错误。")
 
@@ -152,20 +155,34 @@ def check_session_from_query_params():
     elif "session_token" in st.query_params:
         st.query_params.clear()
 
-@st.cache_data(ttl=600)
-def get_stock_prices(tickers):
-    prices = {}
+def get_all_stock_data(tickers):
+    """Fetches latest price for all tickers. To be called sparingly."""
+    all_data = {}
+    if not tickers:
+        return all_data
     ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
     for ticker in tickers:
         try:
-            data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
-            prices[ticker] = data['4. close'].iloc[0]
+            # Fetch daily data
+            daily_data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
+            latest_price = daily_data['4. close'].iloc[0]
+            all_data[ticker] = { "latest_price": latest_price }
         except Exception as e:
             st.warning(f"获取 {ticker} 股价失败: {e}")
+            all_data[ticker] = None
+    return all_data
+
+def get_stock_prices_from_cache(stock_data):
+    """Extracts latest prices from the cached stock data."""
+    prices = {}
+    for ticker, data in stock_data.items():
+        if data:
+            prices[ticker] = data["latest_price"]
+        else:
             prices[ticker] = 0
     return prices
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600) # Keep historical data cached for an hour
 def get_historical_stock_price(ticker, date_str):
     try:
         ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
@@ -173,40 +190,44 @@ def get_historical_stock_price(ticker, date_str):
         if date_str in data.index:
             return data.loc[date_str]['4. close']
         else:
+            # Check previous days in case of holiday/weekend
             for i in range(1, 4):
                 prev_date = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=i)).strftime("%Y-%m-%d")
                 if prev_date in data.index:
                     return data.loc[prev_date]['4. close']
             return 0
-    except:
+    except Exception:
+        # Avoid showing error for historical price checks
         return 0
 
-@st.cache_data(ttl=3600)
-def get_exchange_rates(base_currency='USD', date_str=None):
+def get_exchange_rates(base_currency='USD'):
+    """Fetches latest exchange rates."""
     try:
-        api_date = date_str if date_str else "latest"
-        url = f"https://open.er-api.com/v6/{api_date}/{base_currency}"
+        url = f"https://open.er-api.com/v6/latest/{base_currency}"
         response = requests.get(url)
         response.raise_for_status()
         data = response.json()
         if data.get("result") == "success":
             return data.get("rates")
         else:
-            st.error(f"获取 {api_date} 汇率API返回错误。")
+            st.error(f"获取汇率API返回错误。")
             return None
     except Exception as e:
-        st.error(f"获取 {api_date} 汇率失败: {e}")
+        st.error(f"获取汇率失败: {e}")
         return None
 
-def update_asset_snapshot(user_data, email, total_assets_usd, current_rates):
+def update_asset_snapshot(user_data, email, total_assets_usd, total_stock_value_usd, total_cash_balance_usd, current_rates):
     today_str = datetime.now().strftime("%Y-%m-%d")
     user_profile = user_data["users"][email]
     asset_history = user_profile.setdefault("asset_history", [])
     
+    # Create or update today's snapshot
     if not asset_history or asset_history[-1]["date"] != today_str:
         snapshot = {
             "date": today_str,
             "total_assets_usd": total_assets_usd,
+            "total_stock_value_usd": total_stock_value_usd,
+            "total_cash_balance_usd": total_cash_balance_usd,
             "exchange_rates": current_rates,
             "stock_holdings": user_profile["portfolio"]["stocks"],
             "cash_accounts": user_profile["portfolio"]["cash_accounts"]
@@ -253,19 +274,12 @@ def display_admin_panel():
                             st.rerun()
 
 def display_analysis_tab(user_data, email, display_curr, display_symbol, display_rate):
-    st.subheader("📈 历史资产总览")
+    st.subheader("🔍 资产变动归因分析")
     asset_history = user_data["users"][email].get("asset_history", [])
     if len(asset_history) < 2:
         st.info("历史数据不足（少于2天），暂无法进行分析。请明天再来看看！")
         return
-
-    history_df = pd.DataFrame(asset_history)
-    history_df["date"] = pd.to_datetime(history_df["date"])
-    history_df = history_df.set_index("date")
-    history_df[f"total_assets_{display_curr}"] = history_df["total_assets_usd"] * display_rate
-    st.line_chart(history_df[f"total_assets_{display_curr}"])
     
-    st.subheader("🔍 资产变动归因分析")
     options = [7, 15, 30, 60]
     period_days = st.selectbox("选择分析周期（天）", options, index=0)
     end_snapshot = asset_history[-1]
@@ -284,21 +298,34 @@ def display_analysis_tab(user_data, email, display_curr, display_symbol, display
     total_change_usd = end_snapshot["total_assets_usd"] - start_snapshot["total_assets_usd"]
     
     market_change_usd = 0
-    end_stock_prices = st.session_state.get('stock_prices', {})
+    all_stock_data = st.session_state.get('all_stock_data', {})
+    end_stock_prices = get_stock_prices_from_cache(all_stock_data)
+    
     all_tickers = set([s['ticker'] for s in start_snapshot.get("stock_holdings", [])] + [s['ticker'] for s in end_snapshot.get("stock_holdings", [])])
     for ticker in all_tickers:
-        start_holding = next((s for s in start_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0})
-        end_holding = next((s for s in end_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0})
+        start_holding = next((s for s in start_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0, "currency": "USD"})
+        end_holding = next((s for s in end_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0, "currency": "USD"})
+        currency = start_holding.get("currency", "USD")
         common_quantity = min(start_holding["quantity"], end_holding["quantity"])
+        
         if common_quantity > 0:
             start_price = get_historical_stock_price(ticker, start_snapshot["date"])
             end_price = end_stock_prices.get(ticker, 0)
-            market_change_usd += common_quantity * (end_price - start_price)
+            price_change_local = common_quantity * (end_price - start_price)
+            
+            start_rates = start_snapshot.get("exchange_rates", {})
+            if currency == 'USD':
+                price_change_usd = price_change_local
+            elif currency in start_rates:
+                price_change_usd = price_change_local / start_rates[currency]
+            else:
+                price_change_usd = 0
+            
+            market_change_usd += price_change_usd
 
     cash_flow_usd = 0
     transactions = user_data["users"][email].get("transactions", [])
     for trans in transactions:
-        # Note: Transaction dates can have times, so we compare dates only.
         trans_date_str = trans["date"].split(" ")[0]
         if start_snapshot["date"] < trans_date_str <= end_snapshot["date"]:
             amount = trans.get("amount", 0)
@@ -328,6 +355,32 @@ def display_analysis_tab(user_data, email, display_curr, display_symbol, display
     col2.metric("💸 主动资金流动", f"{display_symbol}{cash_flow_usd * display_rate:,.2f}")
     col3.metric("💱 汇率波动影响", f"{display_symbol}{fx_change_usd * display_rate:,.2f}")
 
+def display_asset_charts_tab(user_data, email, display_curr, display_symbol, display_rate):
+    asset_history = user_data["users"][email].get("asset_history", [])
+    if len(asset_history) < 1:
+        st.info("暂无历史数据，无法生成图表。")
+        return
+
+    history_df = pd.DataFrame(asset_history)
+    history_df["date"] = pd.to_datetime(history_df["date"])
+    history_df = history_df.set_index("date")
+
+    for col in ["total_assets_usd", "total_stock_value_usd", "total_cash_balance_usd"]:
+        if col in history_df.columns:
+            history_df[col.replace("_usd", f"_{display_curr.lower()}")] = history_df[col] * display_rate
+
+    st.subheader(f"总资产历史趋势 ({display_curr})")
+    if f"total_assets_{display_curr.lower()}" in history_df.columns:
+        st.area_chart(history_df[f"total_assets_{display_curr.lower()}"])
+    
+    st.subheader(f"股票市值历史趋势 ({display_curr})")
+    if f"total_stock_value_{display_curr.lower()}" in history_df.columns:
+        st.area_chart(history_df[f"total_stock_value_{display_curr.lower()}"])
+
+    st.subheader(f"现金总额历史趋势 ({display_curr})")
+    if f"total_cash_balance_{display_curr.lower()}" in history_df.columns:
+        st.area_chart(history_df[f"total_cash_balance_{display_curr.lower()}"])
+
 def display_dashboard():
     st.title(f"💰 {st.session_state.user_email} 的资产仪表盘")
     user_data = get_user_data_from_onedrive()
@@ -337,39 +390,62 @@ def display_dashboard():
     user_portfolio = user_data["users"][current_user_email].setdefault("portfolio", {"stocks": [], "cash_accounts": [], "transactions": []})
     user_data["users"][current_user_email].setdefault("asset_history", [])
     
+    # --- Data Migration ---
     data_migrated = False
-    if "cash" in user_portfolio:
-        cash_value = user_portfolio.pop("cash")
-        user_portfolio["cash_accounts"] = [{"name": "默认现金", "balance": cash_value, "currency": "USD"}]
-        data_migrated = True
     for account in user_portfolio.get("cash_accounts", []):
         if "currency" not in account:
-            account["currency"] = "USD"
-            data_migrated = True
+            account["currency"] = "USD"; data_migrated = True
+    for stock in user_portfolio.get("stocks", []):
+        if "currency" not in stock:
+            stock["currency"] = "USD"; data_migrated = True
     if data_migrated and save_user_data_to_onedrive(user_data):
         st.toast("数据结构已自动更新以支持多货币！"); st.rerun()
     
+    # --- Data Fetching Logic (Hourly Cooldown) ---
     cash_accounts = user_portfolio.get("cash_accounts", [])
     stock_holdings = user_portfolio.get("stocks", [])
     tickers_to_fetch = [s['ticker'] for s in stock_holdings if s.get('ticker')]
     
-    if 'stock_prices' not in st.session_state or st.button('🔄 刷新市场数据'):
-        with st.spinner("正在获取最新市场数据..."):
-            st.session_state.stock_prices = get_stock_prices(tickers_to_fetch)
-            st.session_state.exchange_rates = get_exchange_rates()
+    force_refresh = st.button('🔄 刷新市场数据')
+    now = time.time()
+    seconds_since_last_fetch = now - st.session_state.last_market_data_fetch
     
-    stock_prices = st.session_state.get('stock_prices', {})
+    if force_refresh or seconds_since_last_fetch > DATA_REFRESH_INTERVAL_SECONDS:
+        with st.spinner("正在获取最新市场数据..."):
+            st.session_state.all_stock_data = get_all_stock_data(tickers_to_fetch)
+            st.session_state.exchange_rates = get_exchange_rates()
+            st.session_state.last_market_data_fetch = now
+            if force_refresh:
+                st.rerun()
+    
+    # --- Load data from session state ---
+    all_stock_data = st.session_state.get('all_stock_data', {})
+    stock_prices = get_stock_prices_from_cache(all_stock_data)
     exchange_rates = st.session_state.get('exchange_rates', {})
 
     if not exchange_rates:
-        st.error("无法加载汇率，资产总值可能不准确。"); st.stop()
+        st.error("无法加载汇率，资产总值可能不准确。请稍后刷新。"); st.stop()
 
-    total_stock_value_usd = sum(s['quantity'] * stock_prices.get(s['ticker'], 0) for s in stock_holdings)
+    # --- Asset Calculation ---
+    total_stock_value_usd = 0
+    for s in stock_holdings:
+        ticker, quantity, currency = s.get('ticker'), s.get('quantity', 0), s.get('currency', 'USD').upper()
+        price = stock_prices.get(ticker, 0)
+        local_value = quantity * price
+        
+        if currency == 'USD':
+            stock_value_usd = local_value
+        else:
+            rate_to_usd = exchange_rates.get(currency, 1)
+            stock_value_usd = local_value / rate_to_usd if rate_to_usd != 0 else 0
+        total_stock_value_usd += stock_value_usd
+        
     total_cash_balance_usd = sum(acc.get('balance', 0) / exchange_rates.get(acc.get('currency', 'USD').upper(), 1) for acc in cash_accounts)
     total_assets_usd = total_stock_value_usd + total_cash_balance_usd
 
-    update_asset_snapshot(user_data, current_user_email, total_assets_usd, exchange_rates)
+    update_asset_snapshot(user_data, current_user_email, total_assets_usd, total_stock_value_usd, total_cash_balance_usd, exchange_rates)
 
+    # --- Main Display ---
     st.sidebar.selectbox("选择显示货币", options=SUPPORTED_CURRENCIES, key="display_currency")
     display_curr = st.session_state.display_currency
     display_rate = exchange_rates.get(display_curr, 1)
@@ -380,14 +456,20 @@ def display_dashboard():
     col2.metric("📈 股票市值", f"{display_symbol}{total_stock_value_usd * display_rate:,.2f} {display_curr}")
     col3.metric("💵 现金总额", f"{display_symbol}{total_cash_balance_usd * display_rate:,.2f} {display_curr}")
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 持仓与流水", "📈 资产分析", "💹 股价图表", "⚙️ 管理资产"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 持仓与流水", "📊 资产图表", "🔍 归因分析", "⚙️ 管理资产"])
 
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("📊 股票持仓 (USD)")
+            st.subheader("📊 股票持仓")
             if stock_holdings:
-                portfolio_df_data = [{"代码": s['ticker'], "数量": s['quantity'], "当前价格": f"${stock_prices.get(s['ticker'], 0):,.2f}", "总值": f"${s['quantity'] * stock_prices.get(s['ticker'], 0):,.2f}"} for s in stock_holdings]
+                portfolio_df_data = []
+                for s in stock_holdings:
+                    ticker, quantity, currency = s.get('ticker'), s.get('quantity', 0), s.get('currency', 'USD').upper()
+                    price = stock_prices.get(ticker, 0)
+                    symbol = CURRENCY_SYMBOLS.get(currency, '')
+                    total_value = quantity * price
+                    portfolio_df_data.append({"代码": ticker, "数量": quantity, "货币": currency, "当前价格": f"{symbol}{price:,.2f}", "总值": f"{symbol}{total_value:,.2f}"})
                 st.dataframe(pd.DataFrame(portfolio_df_data), use_container_width=True)
             else: st.info("您目前没有股票持仓。")
         with col2:
@@ -403,21 +485,10 @@ def display_dashboard():
         else: st.info("您还没有任何流水记录。")
 
     with tab2:
-        display_analysis_tab(user_data, current_user_email, display_curr, display_symbol, display_rate)
+        display_asset_charts_tab(user_data, current_user_email, display_curr, display_symbol, display_rate)
 
     with tab3:
-        st.subheader("📈 股价图表 (USD)")
-        if tickers_to_fetch:
-            ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
-            all_data, failed_tickers = [], []
-            for ticker in tickers_to_fetch:
-                try:
-                    data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
-                    all_data.append(data['4. close'].rename(ticker))
-                except: failed_tickers.append(ticker)
-            if all_data: st.line_chart(pd.concat(all_data, axis=1).iloc[::-1])
-            if failed_tickers: st.warning(f"无法获取以下股票的数据: {', '.join(failed_tickers)}")
-        else: st.info("没有持仓股票可供显示图表。")
+        display_analysis_tab(user_data, current_user_email, display_curr, display_symbol, display_rate)
         
     with tab4:
         st.subheader("⚙️ 管理资产")
@@ -441,22 +512,28 @@ def display_dashboard():
                     else: st.warning("账户名称和货币不能为空。")
         st.write("---")
         st.subheader("编辑股票持仓")
-        edited_stocks = st.data_editor(stock_holdings, num_rows="dynamic", key="stock_editor", column_config={"ticker": "股票代码", "quantity": st.column_config.NumberColumn("数量", format="%.2f")})
+        edited_stocks = st.data_editor(stock_holdings, num_rows="dynamic", key="stock_editor", 
+            column_config={
+                "ticker": "股票代码", 
+                "quantity": st.column_config.NumberColumn("数量", format="%.2f"),
+                "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True)
+            })
         if st.button("💾 保存对股票持仓的修改"):
-            valid_stocks = [s for s in edited_stocks if s.get("ticker")]
+            valid_stocks = [s for s in edited_stocks if s.get("ticker") and s.get("currency")]
             user_data["users"][current_user_email]["portfolio"]["stocks"] = valid_stocks
             if save_user_data_to_onedrive(user_data):
                 st.success("股票持仓已更新！"); time.sleep(1); st.rerun()
         with st.expander("➕ 添加新的股票持仓"):
             with st.form("new_stock_form", clear_on_submit=True):
-                new_stock_ticker = st.text_input("股票代码 (例如: AAPL)").upper()
+                new_stock_ticker = st.text_input("股票代码 (例如: AAPL, 0700.HK, 600519.SS)").upper()
                 new_stock_quantity = st.number_input("持有数量", value=0.0, format="%.2f")
+                new_stock_currency = st.selectbox("货币", options=SUPPORTED_CURRENCIES)
                 if st.form_submit_button("添加持仓"):
-                    if new_stock_ticker:
-                        user_data["users"][current_user_email]["portfolio"]["stocks"].append({"ticker": new_stock_ticker, "quantity": new_stock_quantity})
+                    if new_stock_ticker and new_stock_currency:
+                        user_data["users"][current_user_email]["portfolio"]["stocks"].append({"ticker": new_stock_ticker, "quantity": new_stock_quantity, "currency": new_stock_currency})
                         if save_user_data_to_onedrive(user_data):
                             st.success(f"持仓 '{new_stock_ticker}' 已添加！"); time.sleep(1); st.rerun()
-                    else: st.warning("股票代码不能为空。")
+                    else: st.warning("股票代码和货币不能为空。")
         st.write("---")
         st.subheader("记录一笔新流水")
         with st.form("transaction_form"):
@@ -482,14 +559,21 @@ def display_dashboard():
                         break
                 if trans_type in ["买入股票", "卖出股票"]:
                     new_transaction.update({"ticker": ticker, "quantity": quantity})
-                    current_holdings = {s['ticker']: s['quantity'] for s in user_data["users"][current_user_email]["portfolio"]["stocks"]}
+                    # This logic needs refinement to handle multi-currency stocks
+                    # For now, it correctly adjusts quantity
+                    current_holdings = {s['ticker']: s for s in user_data["users"][current_user_email]["portfolio"]["stocks"]}
                     if trans_type == "买入股票":
-                        current_holdings[ticker] = current_holdings.get(ticker, 0) + quantity
+                        if ticker in current_holdings:
+                           current_holdings[ticker]['quantity'] += quantity
+                        else:
+                           st.error(f"买入失败: 找不到持仓 {ticker}。请先在'管理资产'中添加该股票。"); st.stop()
                     elif trans_type == "卖出股票":
-                        if current_holdings.get(ticker, 0) < quantity:
-                            st.error("卖出数量超过持有数量！"); st.stop()
-                        current_holdings[ticker] -= quantity
-                    user_data["users"][current_user_email]["portfolio"]["stocks"] = [{"ticker": t, "quantity": q} for t, q in current_holdings.items() if q > 0]
+                        if ticker not in current_holdings or current_holdings[ticker]['quantity'] < quantity:
+                           st.error("卖出数量超过持有数量！"); st.stop()
+                        current_holdings[ticker]['quantity'] -= quantity
+                    
+                    user_data["users"][current_user_email]["portfolio"]["stocks"] = [s for s in current_holdings.values() if s['quantity'] > 0]
+
                 user_transactions.append(new_transaction)
                 if save_user_data_to_onedrive(user_data):
                     st.success("流水记录成功！"); time.sleep(1); st.rerun()
@@ -509,14 +593,13 @@ if st.session_state.logged_in:
             
             if token_to_remove:
                 user_data = get_user_data_from_onedrive()
-                if user_data:
-                    sessions = user_data.get("sessions", {})
+                if user_data and "sessions" in user_data:
+                    sessions = user_data["sessions"]
                     if token_to_remove in sessions:
                         del sessions[token_to_remove]
                         save_user_data_to_onedrive(user_data)
                 st.query_params.clear()
-            else:
-                st.rerun()
+            st.rerun()
 
     display_dashboard()
     if st.session_state.user_email == ADMIN_EMAIL:
