@@ -16,7 +16,7 @@ st.title("📈 Personal Investment Dashboard")
 st.sidebar.header("Enter Your Holdings")
 
 # Ticker input
-ticker_string = st.sidebar.text_input("Stock Tickers (comma-separated)", "AAPL,GOOG,NVDA,00700.HK")
+ticker_string = st.sidebar.text_input("Stock Tickers (comma-separated)", "MSFT")
 ticker_list = [s.strip().upper() for s in ticker_string.split(',') if s.strip()]
 
 # --- Main Page ---
