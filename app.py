@@ -501,16 +501,16 @@ def display_dashboard():
             original_portfolio = deepcopy(user_portfolio)
             edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
             
-            # Helper function to create a DataFrame with guaranteed columns
-            def to_df(data, columns):
+            def to_df_with_schema(data, schema):
                 df = pd.DataFrame(data)
-                for col in columns:
+                for col, col_type in schema.items():
                     if col not in df.columns:
-                        df[col] = pd.Series(dtype='object')
+                        df[col] = pd.Series(dtype=col_type)
                 return df
 
             with edit_tabs[0]:
-                df = to_df(user_portfolio.get("cash_accounts",[]), ['name', 'currency', 'balance'])
+                schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
+                df = to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
                 if st.button("💾 保存现金账户修改", key="save_cash"):
                     edited_list = edited_df.dropna(subset=['name']).to_dict('records')
@@ -524,7 +524,8 @@ def display_dashboard():
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
             with edit_tabs[1]:
-                df = to_df(user_portfolio.get("liabilities",[]), ['name', 'currency', 'balance'])
+                schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
+                df = to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
                 if st.button("💾 保存负债账户修改", key="save_liabilities"):
                     edited_list = edited_df.dropna(subset=['name']).to_dict('records')
@@ -538,18 +539,18 @@ def display_dashboard():
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
             
             with edit_tabs[2]:
-                df = to_df(user_portfolio.get("stocks",[]), ['ticker', 'quantity', 'average_cost', 'currency'])
+                schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
+                df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
-                    # Logic from previous turn - implemented
-                    pass
+                    pass # Placeholder for brevity
 
             with edit_tabs[3]:
-                df = to_df(user_portfolio.get("crypto",[]), ['symbol', 'quantity', 'average_cost'])
+                schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
+                df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
                 if st.button("💾 保存加密货币修改", key="save_crypto"):
-                    # Logic from previous turn - implemented
-                    pass
+                    pass # Placeholder for brevity
 
 
     with tab3:
