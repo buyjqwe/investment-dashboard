@@ -32,34 +32,6 @@ if 'login_step' not in st.session_state:
 if 'display_currency' not in st.session_state:
     st.session_state.display_currency = "USD"
 
-
-# --- Session Management ---
-def check_session_from_query_params():
-    """Checks for a session token in URL params to restore login state on refresh."""
-    if st.session_state.get('logged_in'):
-        return
-
-    token = st.query_params.get("session_token")
-    if not token:
-        return
-
-    user_data = get_user_data_from_onedrive()
-    if not user_data:
-        return
-
-    sessions = user_data.setdefault("sessions", {})
-    session_info = sessions.get(token)
-
-    if session_info and time.time() < session_info.get("expires_at", 0):
-        st.session_state.logged_in = True
-        st.session_state.user_email = session_info["email"]
-        st.session_state.login_step = "logged_in"
-    elif token in st.query_params:
-        st.query_params.clear()
-
-check_session_from_query_params()
-
-
 # --- 微软 Graph API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
 ADMIN_EMAIL = MS_GRAPH_CONFIG["admin_email"]
@@ -67,7 +39,8 @@ ONEDRIVE_FILE_PATH = MS_GRAPH_CONFIG["onedrive_user_file_path"]
 ONEDRIVE_API_URL = f"https://graph.microsoft.com/v1.0/users/{MS_GRAPH_CONFIG['sender_email']}/drive/{ONEDRIVE_FILE_PATH}"
 
 
-# --- Graph API 核心函数 ---
+# --- 核心功能函数定义 ---
+
 @st.cache_data(ttl=3500)
 def get_ms_graph_token():
     url = f"https://login.microsoftonline.com/{MS_GRAPH_CONFIG['tenant_id']}/oauth2/v2.0/token"
@@ -107,7 +80,6 @@ def save_user_data_to_onedrive(data):
         return False
 
 def send_verification_code(email, code):
-    # ... (code unchanged)
     try:
         token = get_ms_graph_token()
         url = f"https://graph.microsoft.com/v1.0/users/{MS_GRAPH_CONFIG['sender_email']}/sendMail"
@@ -120,9 +92,7 @@ def send_verification_code(email, code):
         st.error(f"邮件发送失败: {e}")
         return False
 
-# --- 登录和用户管理逻辑 ---
 def handle_send_code(email):
-    # ... (code unchanged)
     if not re.match(r"[^@]+@[^@]+\.[^@]+", email):
         st.sidebar.error("请输入有效的邮箱地址。")
         return
@@ -138,7 +108,6 @@ def handle_send_code(email):
     st.rerun()
 
 def handle_verify_code(email, code):
-    # ... (code unchanged)
     user_data = get_user_data_from_onedrive()
     if user_data is None: return
     code_info = user_data.get("codes", {}).get(email)
@@ -164,51 +133,31 @@ def handle_verify_code(email, code):
     else:
         st.sidebar.error("验证码错误。")
 
-# --- UI 界面函数 ---
-def display_login_form():
-    # ... (code unchanged)
-    with st.sidebar:
-        st.header("🔐 邮箱登录/注册")
-        if st.session_state.login_step == "enter_email":
-            email = st.text_input("邮箱地址", key="email_input")
-            if st.button("发送验证码"): handle_send_code(email)
-        elif st.session_state.login_step == "enter_code":
-            email_display = st.session_state.get("temp_email", "")
-            st.info(f"验证码已发送至: {email_display}")
-            code = st.text_input("验证码", key="code_input")
-            if st.button("登录或注册"): handle_verify_code(email_display, code)
-            if st.button("返回"):
-                st.session_state.login_step = "enter_email"
-                st.rerun()
+def check_session_from_query_params():
+    """Checks for a session token in URL params to restore login state on refresh."""
+    if st.session_state.get('logged_in'):
+        return
+    token = st.query_params.get("session_token")
+    if not token:
+        return
+    user_data = get_user_data_from_onedrive()
+    if not user_data:
+        return
+    sessions = user_data.setdefault("sessions", {})
+    session_info = sessions.get(token)
+    if session_info and time.time() < session_info.get("expires_at", 0):
+        st.session_state.logged_in = True
+        st.session_state.user_email = session_info["email"]
+        st.session_state.login_step = "logged_in"
+    elif "session_token" in st.query_params:
+        st.query_params.clear()
 
-def display_admin_panel():
-    # ... (code unchanged)
-    with st.sidebar:
-        st.header("👑 管理员面板")
-        user_data = get_user_data_from_onedrive()
-        if user_data is None: return
-        with st.expander("管理所有用户"):
-            all_users = list(user_data.get("users", {}).keys())
-            st.write(f"当前总用户数: {len(all_users)}")
-            for user_email in all_users:
-                if user_email != ADMIN_EMAIL:
-                    col1, col2 = st.columns([3, 1])
-                    col1.write(user_email)
-                    if col2.button("删除", key=f"del_{user_email}"):
-                        del user_data["users"][user_email]
-                        if save_user_data_to_onedrive(user_data):
-                            st.toast(f"用户 {user_email} 已删除。")
-                            st.rerun()
-
-# --- 数据获取函数 ---
 @st.cache_data(ttl=600)
 def get_stock_prices(tickers):
-    # ... (code unchanged)
     prices = {}
     ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
     for ticker in tickers:
         try:
-            # For daily prices, use get_daily
             data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
             prices[ticker] = data['4. close'].iloc[0]
         except Exception as e:
@@ -220,18 +169,15 @@ def get_stock_prices(tickers):
 def get_historical_stock_price(ticker, date_str):
     try:
         ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
-        # Using get_daily with full outputsize to find the closest date
         data, _ = ts.get_daily(symbol=ticker, outputsize='full')
-        # The index is datetime, so we can try to get the exact date
         if date_str in data.index:
             return data.loc[date_str]['4. close']
         else:
-            # If exact date not found (e.g., weekend), find the closest previous date
             for i in range(1, 4):
                 prev_date = (datetime.strptime(date_str, "%Y-%m-%d") - timedelta(days=i)).strftime("%Y-%m-%d")
                 if prev_date in data.index:
                     return data.loc[prev_date]['4. close']
-            return 0 # Fallback
+            return 0
     except:
         return 0
 
@@ -257,7 +203,6 @@ def update_asset_snapshot(user_data, email, total_assets_usd, current_rates):
     user_profile = user_data["users"][email]
     asset_history = user_profile.setdefault("asset_history", [])
     
-    # Check if the last snapshot was taken today
     if not asset_history or asset_history[-1]["date"] != today_str:
         snapshot = {
             "date": today_str,
@@ -272,12 +217,44 @@ def update_asset_snapshot(user_data, email, total_assets_usd, current_rates):
         return True
     return False
 
-# --- 新增：资产分析标签页 ---
+# --- UI 渲染函数 ---
+
+def display_login_form():
+    with st.sidebar:
+        st.header("🔐 邮箱登录/注册")
+        if st.session_state.login_step == "enter_email":
+            email = st.text_input("邮箱地址", key="email_input")
+            if st.button("发送验证码"): handle_send_code(email)
+        elif st.session_state.login_step == "enter_code":
+            email_display = st.session_state.get("temp_email", "")
+            st.info(f"验证码已发送至: {email_display}")
+            code = st.text_input("验证码", key="code_input")
+            if st.button("登录或注册"): handle_verify_code(email_display, code)
+            if st.button("返回"):
+                st.session_state.login_step = "enter_email"
+                st.rerun()
+
+def display_admin_panel():
+    with st.sidebar:
+        st.header("👑 管理员面板")
+        user_data = get_user_data_from_onedrive()
+        if user_data is None: return
+        with st.expander("管理所有用户"):
+            all_users = list(user_data.get("users", {}).keys())
+            st.write(f"当前总用户数: {len(all_users)}")
+            for user_email in all_users:
+                if user_email != ADMIN_EMAIL:
+                    col1, col2 = st.columns([3, 1])
+                    col1.write(user_email)
+                    if col2.button("删除", key=f"del_{user_email}"):
+                        del user_data["users"][user_email]
+                        if save_user_data_to_onedrive(user_data):
+                            st.toast(f"用户 {user_email} 已删除。")
+                            st.rerun()
+
 def display_analysis_tab(user_data, email, display_curr, display_symbol, display_rate):
     st.subheader("📈 历史资产总览")
-    
     asset_history = user_data["users"][email].get("asset_history", [])
-    
     if len(asset_history) < 2:
         st.info("历史数据不足（少于2天），暂无法进行分析。请明天再来看看！")
         return
@@ -286,18 +263,14 @@ def display_analysis_tab(user_data, email, display_curr, display_symbol, display
     history_df["date"] = pd.to_datetime(history_df["date"])
     history_df = history_df.set_index("date")
     history_df[f"total_assets_{display_curr}"] = history_df["total_assets_usd"] * display_rate
-    
     st.line_chart(history_df[f"total_assets_{display_curr}"])
     
     st.subheader("🔍 资产变动归因分析")
-    
     options = [7, 15, 30, 60]
     period_days = st.selectbox("选择分析周期（天）", options, index=0)
-    
     end_snapshot = asset_history[-1]
     start_date = (datetime.strptime(end_snapshot["date"], "%Y-%m-%d") - timedelta(days=period_days)).strftime("%Y-%m-%d")
     
-    # Find the closest snapshot to the start_date
     start_snapshot = None
     for snapshot in reversed(asset_history):
         if snapshot["date"] <= start_date:
@@ -308,43 +281,35 @@ def display_analysis_tab(user_data, email, display_curr, display_symbol, display
         st.warning(f"未找到 {period_days} 天前的资产快照，无法进行精确比较。")
         return
 
-    # 1. Calculate Total Change
     total_change_usd = end_snapshot["total_assets_usd"] - start_snapshot["total_assets_usd"]
     
-    # 2. Decompose Change: Market Fluctuation
     market_change_usd = 0
     end_stock_prices = st.session_state.get('stock_prices', {})
-    
-    # Combine stocks from both snapshots to handle cases where a stock was bought or sold
     all_tickers = set([s['ticker'] for s in start_snapshot.get("stock_holdings", [])] + [s['ticker'] for s in end_snapshot.get("stock_holdings", [])])
-
     for ticker in all_tickers:
         start_holding = next((s for s in start_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0})
         end_holding = next((s for s in end_snapshot["stock_holdings"] if s["ticker"] == ticker), {"quantity": 0})
-        
-        # We only attribute market change to the shares that were held throughout the period
         common_quantity = min(start_holding["quantity"], end_holding["quantity"])
         if common_quantity > 0:
             start_price = get_historical_stock_price(ticker, start_snapshot["date"])
             end_price = end_stock_prices.get(ticker, 0)
             market_change_usd += common_quantity * (end_price - start_price)
 
-    # 3. Decompose Change: User Cash Flow
     cash_flow_usd = 0
     transactions = user_data["users"][email].get("transactions", [])
     for trans in transactions:
-        if start_snapshot["date"] < trans["date"] <= end_snapshot["date"]:
+        # Note: Transaction dates can have times, so we compare dates only.
+        trans_date_str = trans["date"].split(" ")[0]
+        if start_snapshot["date"] < trans_date_str <= end_snapshot["date"]:
             amount = trans.get("amount", 0)
             if trans["type"] in ["收入", "卖出股票"]:
                 cash_flow_usd += abs(amount)
             elif trans["type"] in ["支出", "买入股票"]:
                 cash_flow_usd -= abs(amount)
 
-    # 4. Decompose Change: FX Fluctuation
     fx_change_usd = 0
     start_rates = start_snapshot.get("exchange_rates", {})
     end_rates = end_snapshot.get("exchange_rates", {})
-    
     for account in start_snapshot.get("cash_accounts", []):
         currency = account.get("currency")
         if currency != 'USD' and currency in start_rates and currency in end_rates:
@@ -356,14 +321,12 @@ def display_analysis_tab(user_data, email, display_curr, display_symbol, display
     st.metric(
         f"期间总资产变化 ({display_curr})",
         f"{display_symbol}{total_change_usd * display_rate:,.2f}",
-        f"{display_symbol}{(total_change_usd - market_change_usd - cash_flow_usd - fx_change_usd) * display_rate:,.2f} (其他)"
+        f"{display_symbol}{(total_change_usd - market_change_usd - cash_flow_usd - fx_change_usd) * display_rate:,.2f} (其他/未归因)"
     )
-    
     col1, col2, col3 = st.columns(3)
     col1.metric("📈 市场波动盈亏", f"{display_symbol}{market_change_usd * display_rate:,.2f}")
     col2.metric("💸 主动资金流动", f"{display_symbol}{cash_flow_usd * display_rate:,.2f}")
     col3.metric("💱 汇率波动影响", f"{display_symbol}{fx_change_usd * display_rate:,.2f}")
-
 
 def display_dashboard():
     st.title(f"💰 {st.session_state.user_email} 的资产仪表盘")
@@ -374,7 +337,6 @@ def display_dashboard():
     user_portfolio = user_data["users"][current_user_email].setdefault("portfolio", {"stocks": [], "cash_accounts": [], "transactions": []})
     user_data["users"][current_user_email].setdefault("asset_history", [])
     
-    # --- 数据结构迁移 ---
     data_migrated = False
     if "cash" in user_portfolio:
         cash_value = user_portfolio.pop("cash")
@@ -387,12 +349,10 @@ def display_dashboard():
     if data_migrated and save_user_data_to_onedrive(user_data):
         st.toast("数据结构已自动更新以支持多货币！"); st.rerun()
     
-    # --- 获取数据 ---
-    user_transactions = user_data["users"][current_user_email].setdefault("transactions", [])
     cash_accounts = user_portfolio.get("cash_accounts", [])
     stock_holdings = user_portfolio.get("stocks", [])
-    
     tickers_to_fetch = [s['ticker'] for s in stock_holdings if s.get('ticker')]
+    
     if 'stock_prices' not in st.session_state or st.button('🔄 刷新市场数据'):
         with st.spinner("正在获取最新市场数据..."):
             st.session_state.stock_prices = get_stock_prices(tickers_to_fetch)
@@ -404,15 +364,12 @@ def display_dashboard():
     if not exchange_rates:
         st.error("无法加载汇率，资产总值可能不准确。"); st.stop()
 
-    # --- 资产计算 ---
     total_stock_value_usd = sum(s['quantity'] * stock_prices.get(s['ticker'], 0) for s in stock_holdings)
     total_cash_balance_usd = sum(acc.get('balance', 0) / exchange_rates.get(acc.get('currency', 'USD').upper(), 1) for acc in cash_accounts)
     total_assets_usd = total_stock_value_usd + total_cash_balance_usd
 
-    # --- 创建今日快照 ---
     update_asset_snapshot(user_data, current_user_email, total_assets_usd, exchange_rates)
 
-    # --- 顶部UI ---
     st.sidebar.selectbox("选择显示货币", options=SUPPORTED_CURRENCIES, key="display_currency")
     display_curr = st.session_state.display_currency
     display_rate = exchange_rates.get(display_curr, 1)
@@ -423,11 +380,9 @@ def display_dashboard():
     col2.metric("📈 股票市值", f"{display_symbol}{total_stock_value_usd * display_rate:,.2f} {display_curr}")
     col3.metric("💵 现金总额", f"{display_symbol}{total_cash_balance_usd * display_rate:,.2f} {display_curr}")
 
-    # --- 标签页 ---
     tab1, tab2, tab3, tab4 = st.tabs(["📊 持仓与流水", "📈 资产分析", "💹 股价图表", "⚙️ 管理资产"])
 
     with tab1:
-        # ... (code unchanged from previous version)
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("📊 股票持仓 (USD)")
@@ -442,6 +397,7 @@ def display_dashboard():
                 st.dataframe(pd.DataFrame(cash_df_data), use_container_width=True)
             else: st.info("您还没有现金账户。")
         st.subheader("📑 最近流水")
+        user_transactions = user_data["users"][current_user_email].setdefault("transactions", [])
         if user_transactions:
             st.dataframe(pd.DataFrame(user_transactions).sort_values(by="date", ascending=False), use_container_width=True)
         else: st.info("您还没有任何流水记录。")
@@ -450,7 +406,6 @@ def display_dashboard():
         display_analysis_tab(user_data, current_user_email, display_curr, display_symbol, display_rate)
 
     with tab3:
-        # ... (code unchanged, moved from old tab2)
         st.subheader("📈 股价图表 (USD)")
         if tickers_to_fetch:
             ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
@@ -465,7 +420,6 @@ def display_dashboard():
         else: st.info("没有持仓股票可供显示图表。")
         
     with tab4:
-        # ... (code unchanged, moved from old tab3)
         st.subheader("⚙️ 管理资产")
         st.subheader("编辑现金账户")
         edited_cash_accounts = st.data_editor(cash_accounts, num_rows="dynamic", key="cash_editor", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
@@ -540,8 +494,11 @@ def display_dashboard():
                 if save_user_data_to_onedrive(user_data):
                     st.success("流水记录成功！"); time.sleep(1); st.rerun()
 
-
 # --- 主程序渲染 ---
+
+# First, check for session token to restore login state if necessary
+check_session_from_query_params()
+
 if st.session_state.logged_in:
     with st.sidebar:
         st.success(f"欢迎, {st.session_state.user_email}")
