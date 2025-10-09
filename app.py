@@ -522,49 +522,47 @@ def display_dashboard():
             edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
 
             with edit_tabs[0]: # Cash
-                edited_cash = st.data_editor(user_portfolio["cash_accounts"], num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
+                edited_cash_df = st.data_editor(pd.DataFrame(user_portfolio.get("cash_accounts",[])), num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
                 if st.button("💾 保存现金账户修改", key="save_cash"):
+                    edited_cash = edited_cash_df.to_dict('records')
                     original_map = {acc['name']: acc for acc in original_portfolio["cash_accounts"]}
                     for edited_acc in edited_cash:
-                        original_acc = original_map.get(edited_acc['name'])
-                        if original_acc and abs(original_acc['balance'] - edited_acc['balance']) > 0.01:
+                        original_acc = original_map.get(edited_acc.get('name'))
+                        if edited_acc.get('name') and original_acc and abs(original_acc['balance'] - edited_acc['balance']) > 0.01:
                             delta = edited_acc['balance'] - original_acc['balance']
-                            user_profile.setdefault("transactions", []).append({
-                                "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "收入" if delta > 0 else "支出", 
-                                "description": "手动调整现金账户余额", "amount": abs(delta), 
-                                "currency": edited_acc["currency"], "account": edited_acc["name"]
-                            })
-                    user_portfolio["cash_accounts"] = edited_cash
+                            user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "收入" if delta > 0 else "支出", "description": "手动调整现金账户余额", "amount": abs(delta), "currency": edited_acc["currency"], "account": edited_acc["name"]})
+                    user_portfolio["cash_accounts"] = [item for item in edited_cash if item.get('name')]
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
             with edit_tabs[1]: # Liabilities
-                edited_liabilities = st.data_editor(user_portfolio["liabilities"], num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
+                edited_liabilities_df = st.data_editor(pd.DataFrame(user_portfolio.get("liabilities",[])), num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
                 if st.button("💾 保存负债账户修改", key="save_liabilities"):
+                    edited_liabilities = edited_liabilities_df.to_dict('records')
                     original_map = {liab['name']: liab for liab in original_portfolio["liabilities"]}
                     for edited_liab in edited_liabilities:
-                        original_liab = original_map.get(edited_liab['name'])
-                        if original_liab and abs(original_liab['balance'] - edited_liab['balance']) > 0.01:
+                        original_liab = original_map.get(edited_liab.get('name'))
+                        if edited_liab.get('name') and original_liab and abs(original_liab['balance'] - edited_liab['balance']) > 0.01:
                             delta = edited_liab['balance'] - original_liab['balance']
-                            user_profile.setdefault("transactions", []).append({
-                                "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "负债增加" if delta > 0 else "负债减少",
-                                "description": "手动调整负债余额", "amount": abs(delta),
-                                "currency": edited_liab["currency"], "account": edited_liab["name"]
-                            })
-                    user_portfolio["liabilities"] = edited_liabilities
+                            user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "负债增加" if delta > 0 else "负债减少", "description": "手动调整负债余额", "amount": abs(delta), "currency": edited_liab["currency"], "account": edited_liab["name"]})
+                    user_portfolio["liabilities"] = [item for item in edited_liabilities if item.get('name')]
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
             
             with edit_tabs[2]: # Stocks
-                edited_stocks = st.data_editor(user_portfolio["stocks"], num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
+                edited_stocks_df = st.data_editor(pd.DataFrame(user_portfolio.get("stocks",[])), num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
+                    edited_stocks = edited_stocks_df.to_dict('records')
                     original_map = {s['ticker']: s for s in original_portfolio["stocks"]}
                     default_cash_account = cash_accounts[0] if cash_accounts else None
                     if not default_cash_account: st.error("无法自动记录流水，请先创建至少一个现金账户。")
                     else:
                         for edited_stock in edited_stocks:
-                            original_stock = original_map.get(edited_stock['ticker'])
-                            if original_stock and abs(edited_stock['quantity'] - original_stock['quantity']) > 1e-9:
-                                qty_delta = edited_stock['quantity'] - original_stock['quantity']
-                                current_price = prices.get(edited_stock['ticker'], 0)
+                            ticker = edited_stock.get('ticker')
+                            if not ticker: continue
+                            original_stock = original_map.get(ticker)
+                            # Handle quantity changes
+                            if original_stock and abs(edited_stock.get('quantity',0) - original_stock.get('quantity',0)) > 1e-9:
+                                qty_delta = edited_stock.get('quantity',0) - original_stock.get('quantity',0)
+                                current_price = prices.get(ticker, 0)
                                 if current_price == 0: continue
                                 market_value_delta_stock_curr = abs(qty_delta) * current_price
                                 market_value_delta_usd = market_value_delta_stock_curr / exchange_rates.get(edited_stock.get('currency', 'USD'), 1)
@@ -579,22 +577,25 @@ def display_dashboard():
                                     trans_type, desc = "卖出股票", "手动减持股票"
                                     default_cash_account['balance'] += market_value_delta_cash_curr
                                 
-                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": edited_stock['ticker'], "quantity": abs(qty_delta)})
-                        user_portfolio["stocks"] = [s for s in edited_stocks if s['quantity'] > 1e-9]
+                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": ticker, "quantity": abs(qty_delta)})
+                        user_portfolio["stocks"] = [s for s in edited_stocks if s.get('ticker') and s.get('quantity', 0) > 1e-9]
                         if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
             with edit_tabs[3]: # Crypto
-                edited_crypto = st.data_editor(user_portfolio["crypto"], num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
+                edited_crypto_df = st.data_editor(pd.DataFrame(user_portfolio.get("crypto", [])), num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
                 if st.button("💾 保存加密货币修改", key="save_crypto"):
+                    edited_crypto = edited_crypto_df.to_dict('records')
                     original_map = {c['symbol']: c for c in original_portfolio["crypto"]}
                     default_cash_account = cash_accounts[0] if cash_accounts else None
                     if not default_cash_account: st.error("无法自动记录流水，请先创建至少一个现金账户。")
                     else:
                         for edited_c in edited_crypto:
-                            original_c = original_map.get(edited_c['symbol'])
-                            if original_c and abs(edited_c['quantity'] - original_c['quantity']) > 1e-9:
-                                qty_delta = edited_c['quantity'] - original_c['quantity']
-                                current_price = prices.get(edited_c['symbol'], 0)
+                            symbol = edited_c.get('symbol')
+                            if not symbol: continue
+                            original_c = original_map.get(symbol)
+                            if original_c and abs(edited_c.get('quantity',0) - original_c.get('quantity',0)) > 1e-9:
+                                qty_delta = edited_c.get('quantity',0) - original_c.get('quantity',0)
+                                current_price = prices.get(symbol, 0)
                                 if current_price == 0: continue
                                 market_value_delta_usd = abs(qty_delta) * current_price
                                 market_value_delta_cash_curr = market_value_delta_usd * exchange_rates.get(default_cash_account['currency'], 1)
@@ -608,8 +609,8 @@ def display_dashboard():
                                     trans_type, desc = "卖出加密货币", "手动减持加密货币"
                                     default_cash_account['balance'] += market_value_delta_cash_curr
                                 
-                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": edited_c['symbol'], "quantity": abs(qty_delta)})
-                        user_portfolio["crypto"] = [c for c in edited_crypto if c['quantity'] > 1e-9]
+                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": symbol, "quantity": abs(qty_delta)})
+                        user_portfolio["crypto"] = [c for c in edited_crypto if c.get('symbol') and c.get('quantity', 0) > 1e-9]
                         if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
 
