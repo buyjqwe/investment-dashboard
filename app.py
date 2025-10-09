@@ -22,10 +22,11 @@ if 'user_email' not in st.session_state:
 if 'login_step' not in st.session_state:
     st.session_state.login_step = "enter_email"
 
-# --- 微软 Graph API 配置 ---
+# --- 微软 Graph API 配置 (已修复) ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
 ADMIN_EMAIL = MS_GRAPH_CONFIG["admin_email"]
-ONEDRIVE_FILE_PATH = MS_GRAPH_CONFIG["onedrive_user_file_path"].replace(":", ":/", 1)
+# 修复了 URL 构造逻辑，移除了错误的 .replace() 调用
+ONEDRIVE_FILE_PATH = MS_GRAPH_CONFIG["onedrive_user_file_path"]
 ONEDRIVE_API_URL = f"https://graph.microsoft.com/v1.0/users/{MS_GRAPH_CONFIG['sender_email']}/drive/{ONEDRIVE_FILE_PATH}"
 
 
