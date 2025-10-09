@@ -517,7 +517,36 @@ def display_dashboard():
         st.dataframe(transactions_df.sort_values(by="date", ascending=False) if not transactions_df.empty else pd.DataFrame(), use_container_width=True, hide_index=True)
 
         with st.expander("⚙️ 编辑现有资产与负债 (危险操作，将自动生成流水)"):
-            st.info("编辑功能待更新以适配成本价逻辑。")
+            original_portfolio = deepcopy(user_portfolio)
+
+            edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
+
+            with edit_tabs[0]: # Cash
+                edited_cash = st.data_editor(user_portfolio["cash_accounts"], num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
+                if st.button("💾 保存现金账户修改", key="save_cash"):
+                    original_map = {acc['name']: acc for acc in original_portfolio["cash_accounts"]}
+                    for edited_acc in edited_cash:
+                        original_acc = original_map.get(edited_acc['name'])
+                        if original_acc and abs(original_acc['balance'] - edited_acc['balance']) > 0.01:
+                            delta = edited_acc['balance'] - original_acc['balance']
+                            user_profile.setdefault("transactions", []).append({
+                                "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "收入" if delta > 0 else "支出", 
+                                "description": "手动调整现金账户余额", "amount": abs(delta), 
+                                "currency": edited_acc["currency"], "account": edited_acc["name"]
+                            })
+                    user_portfolio["cash_accounts"] = edited_cash
+                    if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
+
+            with edit_tabs[1]: # Liabilities
+                 st.info("负债编辑功能待开发。") # Placeholder
+            
+            with edit_tabs[2]: # Stocks
+                edited_stocks = st.data_editor(user_portfolio["stocks"], num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": "数量", "average_cost": "平均成本", "currency": "货币"})
+                if st.button("💾 保存股票持仓修改", key="save_stocks"):
+                    st.info("股票编辑功能待开发。") # Placeholder
+
+            with edit_tabs[3]: # Crypto
+                st.info("加密货币编辑功能待开发。") # Placeholder
 
 
     with tab3:
