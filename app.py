@@ -22,10 +22,9 @@ if 'user_email' not in st.session_state:
 if 'login_step' not in st.session_state:
     st.session_state.login_step = "enter_email"
 
-# --- 微软 Graph API 配置 (已修复) ---
+# --- 微软 Graph API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
 ADMIN_EMAIL = MS_GRAPH_CONFIG["admin_email"]
-# 修复了 URL 构造逻辑，移除了错误的 .replace() 调用
 ONEDRIVE_FILE_PATH = MS_GRAPH_CONFIG["onedrive_user_file_path"]
 ONEDRIVE_API_URL = f"https://graph.microsoft.com/v1.0/users/{MS_GRAPH_CONFIG['sender_email']}/drive/{ONEDRIVE_FILE_PATH}"
 
@@ -51,7 +50,8 @@ def get_user_data_from_onedrive():
     try:
         token = get_ms_graph_token()
         headers = {"Authorization": f"Bearer {token}"}
-        content_url = f"{ONEDRIVE_API_URL}/content"
+        # 已修复: 根据 Graph API 规范, 在路径末尾和 /content 之间必须有冒号
+        content_url = f"{ONEDRIVE_API_URL}:/content"
         resp = requests.get(content_url, headers=headers)
         
         if resp.status_code == 404: # 文件不存在，创建并返回初始管理员结构
@@ -78,7 +78,8 @@ def save_user_data_to_onedrive(data):
     try:
         token = get_ms_graph_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        content_url = f"{ONEDRIVE_API_URL}/content"
+        # 已修复: 根据 Graph API 规范, 在路径末尾和 /content 之间必须有冒号
+        content_url = f"{ONEDRIVE_API_URL}:/content"
         resp = requests.put(content_url, headers=headers, data=json.dumps(data, indent=2))
         resp.raise_for_status()
         return True
