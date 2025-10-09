@@ -15,6 +15,11 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- 全局常量 ---
+SUPPORTED_CURRENCIES = ["USD", "CNY", "EUR", "HKD", "JPY", "GBP"]
+CURRENCY_SYMBOLS = {"USD": "$", "CNY": "¥", "EUR": "€", "HKD": "HK$", "JPY": "¥", "GBP": "£"}
+
+
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -22,6 +27,9 @@ if 'user_email' not in st.session_state:
     st.session_state.user_email = ""
 if 'login_step' not in st.session_state:
     st.session_state.login_step = "enter_email"
+if 'display_currency' not in st.session_state:
+    st.session_state.display_currency = "USD"
+
 
 # --- 微软 Graph API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
@@ -46,7 +54,7 @@ def get_user_data_from_onedrive():
         content_url = f"{ONEDRIVE_API_URL}:/content"
         resp = requests.get(content_url, headers=headers)
         if resp.status_code == 404:
-            initial_data = {"users": {ADMIN_EMAIL: {"role": "admin", "portfolio": {"stocks": [{"ticker": "TSLA", "quantity": 10}], "cash_accounts": [{"name": "默认现金", "balance": 50000}]}, "transactions": []}}, "codes": {}}
+            initial_data = {"users": {ADMIN_EMAIL: {"role": "admin", "portfolio": {"stocks": [{"ticker": "TSLA", "quantity": 10}], "cash_accounts": [{"name": "默认现金", "balance": 50000, "currency": "USD"}]}, "transactions": []}}, "codes": {}}
             save_user_data_to_onedrive(initial_data)
             return initial_data
         resp.raise_for_status()
@@ -105,7 +113,7 @@ def handle_verify_code(email, code):
         return
     if code_info["code"] == code:
         if email not in user_data["users"]:
-            user_data["users"][email] = {"role": "user", "portfolio": {"stocks": [{"ticker": "AAPL", "quantity": 10}, {"ticker": "GOOG", "quantity": 5}], "cash_accounts": [{"name": "银行卡", "balance": 10000}, {"name": "支付宝", "balance": 2000}]}, "transactions": []}
+            user_data["users"][email] = {"role": "user", "portfolio": {"stocks": [{"ticker": "AAPL", "quantity": 10}, {"ticker": "GOOG", "quantity": 5}], "cash_accounts": [{"name": "美元银行卡", "balance": 10000, "currency": "USD"}, {"name": "人民币支付宝", "balance": 2000, "currency": "CNY"}]}, "transactions": []}
             st.toast("🎉 注册成功！已为您创建新账户。")
         st.session_state.logged_in = True
         st.session_state.user_email = email
@@ -150,6 +158,7 @@ def display_admin_panel():
                             st.toast(f"用户 {user_email} 已删除。")
                             st.rerun()
 
+# --- 数据获取函数 ---
 @st.cache_data(ttl=600)
 def get_stock_prices(tickers):
     prices = {}
@@ -158,9 +167,26 @@ def get_stock_prices(tickers):
         try:
             data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
             prices[ticker] = data['4. close'].iloc[0]
-        except:
+        except Exception as e:
+            st.warning(f"获取 {ticker} 股价失败: {e}")
             prices[ticker] = 0
     return prices
+
+@st.cache_data(ttl=600)
+def get_exchange_rates(base_currency='USD'):
+    try:
+        url = f"https://open.er-api.com/v6/latest/{base_currency}"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+        if data.get("result") == "success":
+            return data["rates"]
+        else:
+            st.error("获取汇率API返回错误。")
+            return None
+    except Exception as e:
+        st.error(f"获取汇率失败: {e}")
+        return None
 
 def display_dashboard():
     st.title(f"💰 {st.session_state.user_email} 的资产仪表盘")
@@ -170,37 +196,72 @@ def display_dashboard():
     current_user_email = st.session_state.user_email
     user_portfolio = user_data["users"][current_user_email].setdefault("portfolio", {"stocks": [], "cash_accounts": [], "transactions": []})
     
+    # --- 数据结构迁移和兼容性处理 ---
+    data_migrated = False
     if "cash" in user_portfolio:
         cash_value = user_portfolio.pop("cash")
-        user_portfolio["cash_accounts"] = [{"name": "默认现金", "balance": cash_value}]
+        user_portfolio["cash_accounts"] = [{"name": "默认现金", "balance": cash_value, "currency": "USD"}]
+        data_migrated = True
+    for account in user_portfolio.get("cash_accounts", []):
+        if "currency" not in account:
+            account["currency"] = "USD"
+            data_migrated = True
+    if data_migrated:
         if save_user_data_to_onedrive(user_data):
-            st.toast("数据结构已自动更新！")
+            st.toast("数据结构已自动更新以支持多货币！")
             st.rerun()
-
+    
+    # --- 获取数据 ---
     user_transactions = user_data["users"][current_user_email].setdefault("transactions", [])
     cash_accounts = user_portfolio.get("cash_accounts", [])
     stock_holdings = user_portfolio.get("stocks", [])
     
     tickers_to_fetch = [s['ticker'] for s in stock_holdings if s.get('ticker')]
-    if 'stock_prices' not in st.session_state or st.button('🔄 刷新股价'):
+    if 'stock_prices' not in st.session_state or st.button('🔄 刷新市场数据'):
         st.session_state.stock_prices = get_stock_prices(tickers_to_fetch)
-    stock_prices = st.session_state.stock_prices
+        st.session_state.exchange_rates = get_exchange_rates()
+    
+    stock_prices = st.session_state.get('stock_prices', get_stock_prices(tickers_to_fetch))
+    exchange_rates = st.session_state.get('exchange_rates', get_exchange_rates())
 
-    total_stock_value = sum(s['quantity'] * stock_prices.get(s['ticker'], 0) for s in stock_holdings)
-    total_cash_balance = sum(acc.get('balance', 0) for acc in cash_accounts)
-    total_assets = total_stock_value + total_cash_balance
+    if not exchange_rates:
+        st.error("无法加载汇率，资产总值可能不准确。")
+        st.stop()
+
+    # --- 资产计算 ---
+    total_stock_value_usd = sum(s['quantity'] * stock_prices.get(s['ticker'], 0) for s in stock_holdings)
+    
+    total_cash_balance_usd = 0
+    for acc in cash_accounts:
+        balance = acc.get('balance', 0)
+        currency = acc.get('currency', 'USD').upper()
+        # 将所有现金转换为USD进行加总
+        total_cash_balance_usd += balance / exchange_rates.get(currency, 1)
+        
+    total_assets_usd = total_stock_value_usd + total_cash_balance_usd
+
+    # --- 顶部UI显示 ---
+    st.sidebar.selectbox(
+        "选择显示货币", 
+        options=SUPPORTED_CURRENCIES, 
+        key="display_currency"
+    )
+    display_curr = st.session_state.display_currency
+    display_rate = exchange_rates.get(display_curr, 1)
+    display_symbol = CURRENCY_SYMBOLS.get(display_curr, "")
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("💰 资产总值", f"${total_assets:,.2f}")
-    col2.metric("📈 股票市值", f"${total_stock_value:,.2f}")
-    col3.metric("💵 现金总额", f"${total_cash_balance:,.2f}")
+    col1.metric("💰 资产总值", f"{display_symbol}{total_assets_usd * display_rate:,.2f} {display_curr}")
+    col2.metric("📈 股票市值", f"{display_symbol}{total_stock_value_usd * display_rate:,.2f} {display_curr}")
+    col3.metric("💵 现金总额", f"{display_symbol}{total_cash_balance_usd * display_rate:,.2f} {display_curr}")
 
+    # --- 标签页 ---
     tab1, tab2, tab3 = st.tabs(["📊 持仓与流水", "📈 股价图表", "⚙️ 管理资产"])
 
     with tab1:
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("📊 股票持仓")
+            st.subheader("📊 股票持仓 (USD)")
             if stock_holdings:
                 portfolio_df_data = [{"代码": s['ticker'], "数量": s['quantity'], "当前价格": f"${stock_prices.get(s['ticker'], 0):,.2f}", "总值": f"${s['quantity'] * stock_prices.get(s['ticker'], 0):,.2f}"} for s in stock_holdings]
                 st.dataframe(pd.DataFrame(portfolio_df_data), use_container_width=True)
@@ -208,7 +269,7 @@ def display_dashboard():
         with col2:
             st.subheader("💵 现金账户")
             if cash_accounts:
-                cash_df_data = [{"账户名称": acc.get("name", ""), "余额": f"${acc.get('balance', 0):,.2f}"} for acc in cash_accounts]
+                cash_df_data = [{"账户名称": acc.get("name", ""),"货币": acc.get("currency", "N/A"), "余额": f"{CURRENCY_SYMBOLS.get(acc.get('currency'), '')}{acc.get('balance', 0):,.2f}"} for acc in cash_accounts]
                 st.dataframe(pd.DataFrame(cash_df_data), use_container_width=True)
             else: st.info("您还没有现金账户。")
 
@@ -218,10 +279,10 @@ def display_dashboard():
         else: st.info("您还没有任何流水记录。")
 
     with tab2:
-        st.subheader("📈 股价图表")
+        st.subheader("📈 股价图表 (USD)")
         if tickers_to_fetch:
             ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
-            all_data, failed_tickers = [], [],
+            all_data, failed_tickers = [], []
             for ticker in tickers_to_fetch:
                 try:
                     data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
@@ -235,9 +296,18 @@ def display_dashboard():
         st.subheader("⚙️ 管理资产")
 
         st.subheader("编辑现金账户")
-        edited_cash_accounts = st.data_editor(cash_accounts, num_rows="dynamic", key="cash_editor", column_config={"name": "账户名称", "balance": st.column_config.NumberColumn("余额", format="$%.2f")})
+        edited_cash_accounts = st.data_editor(
+            cash_accounts, 
+            num_rows="dynamic", 
+            key="cash_editor", 
+            column_config={
+                "name": "账户名称", 
+                "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True),
+                "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)
+            }
+        )
         if st.button("💾 保存对现金账户的修改"):
-            valid_accounts = [acc for acc in edited_cash_accounts if acc.get("name")]
+            valid_accounts = [acc for acc in edited_cash_accounts if acc.get("name") and acc.get("currency")]
             user_data["users"][current_user_email]["portfolio"]["cash_accounts"] = valid_accounts
             if save_user_data_to_onedrive(user_data):
                 st.success("现金账户已更新！"); time.sleep(1); st.rerun()
@@ -245,13 +315,14 @@ def display_dashboard():
         with st.expander("➕ 添加新的现金账户"):
             with st.form("new_cash_account_form", clear_on_submit=True):
                 new_acc_name = st.text_input("账户名称 (例如: 微信零钱)")
+                new_acc_currency = st.selectbox("货币", options=SUPPORTED_CURRENCIES)
                 new_acc_balance = st.number_input("初始余额", value=0.0, format="%.2f")
                 if st.form_submit_button("添加账户"):
-                    if new_acc_name:
-                        user_data["users"][current_user_email]["portfolio"]["cash_accounts"].append({"name": new_acc_name, "balance": new_acc_balance})
+                    if new_acc_name and new_acc_currency:
+                        user_data["users"][current_user_email]["portfolio"]["cash_accounts"].append({"name": new_acc_name, "currency": new_acc_currency, "balance": new_acc_balance})
                         if save_user_data_to_onedrive(user_data):
                             st.success(f"账户 '{new_acc_name}' 已添加！"); time.sleep(1); st.rerun()
-                    else: st.warning("账户名称不能为空。")
+                    else: st.warning("账户名称和货币不能为空。")
 
         st.write("---")
         st.subheader("编辑股票持仓")
@@ -298,6 +369,7 @@ def display_dashboard():
                         elif trans_type == "支出": acc["balance"] -= amount; new_transaction["amount"] = -amount
                         elif trans_type == "买入股票": acc["balance"] -= amount
                         elif trans_type == "卖出股票": acc["balance"] += amount
+                        new_transaction["currency"] = acc.get("currency") # 记录流水货币
                         break
                 
                 if trans_type in ["买入股票", "卖出股票"]:
