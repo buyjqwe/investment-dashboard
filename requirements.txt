@@ -2,3 +2,4 @@ streamlit
 pandas
 alpha_vantage
 requests
+plotly
