@@ -507,7 +507,14 @@ def display_dashboard():
             st.dataframe(pd.DataFrame([{"代码": c['symbol'], "数量": c['quantity'], "当前价格": f"${prices.get(c['symbol'], 0):,.2f}"} for c in crypto_holdings]), use_container_width=True, hide_index=True)
 
         st.subheader("📑 最近流水")
-        st.dataframe(pd.DataFrame(user_data["users"][current_user_email].setdefault("transactions", [])).sort_values(by="date", ascending=False), use_container_width=True, hide_index=True)
+        # 增加健壮性：只处理包含'date'键的交易记录，以兼容旧数据格式
+        transactions = user_data["users"][current_user_email].setdefault("transactions", [])
+        valid_transactions = [t for t in transactions if 'date' in t]
+        if valid_transactions:
+            st.dataframe(pd.DataFrame(valid_transactions).sort_values(by="date", ascending=False), use_container_width=True, hide_index=True)
+        else:
+            st.info("您还没有任何有效的流水记录。")
+
 
     with tab2:
         display_asset_charts_tab(user_data, current_user_email, display_curr, display_symbol, display_rate)
@@ -624,4 +631,5 @@ if st.session_state.logged_in:
         display_admin_panel()
 else:
     display_login_form()
+
 
