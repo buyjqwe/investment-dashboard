@@ -538,15 +538,79 @@ def display_dashboard():
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
             with edit_tabs[1]: # Liabilities
-                 st.info("负债编辑功能待开发。") # Placeholder
+                edited_liabilities = st.data_editor(user_portfolio["liabilities"], num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
+                if st.button("💾 保存负债账户修改", key="save_liabilities"):
+                    original_map = {liab['name']: liab for liab in original_portfolio["liabilities"]}
+                    for edited_liab in edited_liabilities:
+                        original_liab = original_map.get(edited_liab['name'])
+                        if original_liab and abs(original_liab['balance'] - edited_liab['balance']) > 0.01:
+                            delta = edited_liab['balance'] - original_liab['balance']
+                            user_profile.setdefault("transactions", []).append({
+                                "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "负债增加" if delta > 0 else "负债减少",
+                                "description": "手动调整负债余额", "amount": abs(delta),
+                                "currency": edited_liab["currency"], "account": edited_liab["name"]
+                            })
+                    user_portfolio["liabilities"] = edited_liabilities
+                    if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
             
             with edit_tabs[2]: # Stocks
-                edited_stocks = st.data_editor(user_portfolio["stocks"], num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": "数量", "average_cost": "平均成本", "currency": "货币"})
+                edited_stocks = st.data_editor(user_portfolio["stocks"], num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
-                    st.info("股票编辑功能待开发。") # Placeholder
+                    original_map = {s['ticker']: s for s in original_portfolio["stocks"]}
+                    default_cash_account = cash_accounts[0] if cash_accounts else None
+                    if not default_cash_account: st.error("无法自动记录流水，请先创建至少一个现金账户。")
+                    else:
+                        for edited_stock in edited_stocks:
+                            original_stock = original_map.get(edited_stock['ticker'])
+                            if original_stock and abs(edited_stock['quantity'] - original_stock['quantity']) > 1e-9:
+                                qty_delta = edited_stock['quantity'] - original_stock['quantity']
+                                current_price = prices.get(edited_stock['ticker'], 0)
+                                if current_price == 0: continue
+                                market_value_delta_stock_curr = abs(qty_delta) * current_price
+                                market_value_delta_usd = market_value_delta_stock_curr / exchange_rates.get(edited_stock.get('currency', 'USD'), 1)
+                                market_value_delta_cash_curr = market_value_delta_usd * exchange_rates.get(default_cash_account['currency'], 1)
+
+                                if qty_delta > 0:
+                                    trans_type, desc = "买入股票", "手动增持股票"
+                                    default_cash_account['balance'] -= market_value_delta_cash_curr
+                                    old_total_cost = original_stock.get('average_cost', 0) * original_stock['quantity']
+                                    edited_stock['average_cost'] = (old_total_cost + market_value_delta_stock_curr) / edited_stock['quantity']
+                                else:
+                                    trans_type, desc = "卖出股票", "手动减持股票"
+                                    default_cash_account['balance'] += market_value_delta_cash_curr
+                                
+                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": edited_stock['ticker'], "quantity": abs(qty_delta)})
+                        user_portfolio["stocks"] = [s for s in edited_stocks if s['quantity'] > 1e-9]
+                        if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
             with edit_tabs[3]: # Crypto
-                st.info("加密货币编辑功能待开发。") # Placeholder
+                edited_crypto = st.data_editor(user_portfolio["crypto"], num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
+                if st.button("💾 保存加密货币修改", key="save_crypto"):
+                    original_map = {c['symbol']: c for c in original_portfolio["crypto"]}
+                    default_cash_account = cash_accounts[0] if cash_accounts else None
+                    if not default_cash_account: st.error("无法自动记录流水，请先创建至少一个现金账户。")
+                    else:
+                        for edited_c in edited_crypto:
+                            original_c = original_map.get(edited_c['symbol'])
+                            if original_c and abs(edited_c['quantity'] - original_c['quantity']) > 1e-9:
+                                qty_delta = edited_c['quantity'] - original_c['quantity']
+                                current_price = prices.get(edited_c['symbol'], 0)
+                                if current_price == 0: continue
+                                market_value_delta_usd = abs(qty_delta) * current_price
+                                market_value_delta_cash_curr = market_value_delta_usd * exchange_rates.get(default_cash_account['currency'], 1)
+
+                                if qty_delta > 0:
+                                    trans_type, desc = "买入加密货币", "手动增持加密货币"
+                                    default_cash_account['balance'] -= market_value_delta_cash_curr
+                                    old_total_cost = original_c.get('average_cost', 0) * original_c['quantity']
+                                    edited_c['average_cost'] = (old_total_cost + market_value_delta_usd) / edited_c['quantity']
+                                else:
+                                    trans_type, desc = "卖出加密货币", "手动减持加密货币"
+                                    default_cash_account['balance'] += market_value_delta_cash_curr
+                                
+                                user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": desc, "amount": market_value_delta_cash_curr, "currency": default_cash_account['currency'], "account": default_cash_account['name'], "symbol": edited_c['symbol'], "quantity": abs(qty_delta)})
+                        user_portfolio["crypto"] = [c for c in edited_crypto if c['quantity'] > 1e-9]
+                        if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
 
     with tab3:
