@@ -105,7 +105,6 @@ def handle_verify_code(email, code):
         return
     if code_info["code"] == code:
         if email not in user_data["users"]:
-            # 全新的数据结构
             user_data["users"][email] = {"role": "user", "portfolio": {"stocks": [{"ticker": "AAPL", "quantity": 10}, {"ticker": "GOOG", "quantity": 5}], "cash_accounts": [{"name": "银行卡", "balance": 10000}, {"name": "支付宝", "balance": 2000}]}, "transactions": []}
             st.toast("🎉 注册成功！已为您创建新账户。")
         st.session_state.logged_in = True
@@ -171,7 +170,6 @@ def display_dashboard():
     current_user_email = st.session_state.user_email
     user_portfolio = user_data["users"][current_user_email].setdefault("portfolio", {"stocks": [], "cash_accounts": [], "transactions": []})
     
-    # --- 数据迁移: 从旧的 "cash" 结构迁移到新的 "cash_accounts" ---
     if "cash" in user_portfolio:
         cash_value = user_portfolio.pop("cash")
         user_portfolio["cash_accounts"] = [{"name": "默认现金", "balance": cash_value}]
@@ -181,14 +179,11 @@ def display_dashboard():
 
     user_transactions = user_data["users"][current_user_email].setdefault("transactions", [])
     cash_accounts = user_portfolio.get("cash_accounts", [])
-
-    # --- 资产总览 ---
     stock_holdings = user_portfolio.get("stocks", [])
+    
     tickers_to_fetch = [s['ticker'] for s in stock_holdings if s.get('ticker')]
-    
-    if 'stock_prices' not in st.session_state or st.button('刷新股价'):
+    if 'stock_prices' not in st.session_state or st.button('🔄 刷新股价'):
         st.session_state.stock_prices = get_stock_prices(tickers_to_fetch)
-    
     stock_prices = st.session_state.stock_prices
 
     total_stock_value = sum(s['quantity'] * stock_prices.get(s['ticker'], 0) for s in stock_holdings)
@@ -200,7 +195,6 @@ def display_dashboard():
     col2.metric("📈 股票市值", f"${total_stock_value:,.2f}")
     col3.metric("💵 现金总额", f"${total_cash_balance:,.2f}")
 
-    # --- 界面布局 (Tabs) ---
     tab1, tab2, tab3 = st.tabs(["📊 持仓与流水", "📈 股价图表", "⚙️ 管理资产"])
 
     with tab1:
@@ -210,60 +204,74 @@ def display_dashboard():
             if stock_holdings:
                 portfolio_df_data = [{"代码": s['ticker'], "数量": s['quantity'], "当前价格": f"${stock_prices.get(s['ticker'], 0):,.2f}", "总值": f"${s['quantity'] * stock_prices.get(s['ticker'], 0):,.2f}"} for s in stock_holdings]
                 st.dataframe(pd.DataFrame(portfolio_df_data), use_container_width=True)
-            else:
-                st.info("您目前没有股票持仓。")
+            else: st.info("您目前没有股票持仓。")
         with col2:
             st.subheader("💵 现金账户")
             if cash_accounts:
                 cash_df_data = [{"账户名称": acc.get("name", ""), "余额": f"${acc.get('balance', 0):,.2f}"} for acc in cash_accounts]
                 st.dataframe(pd.DataFrame(cash_df_data), use_container_width=True)
-            else:
-                st.info("您还没有现金账户。")
+            else: st.info("您还没有现金账户。")
 
         st.subheader("📑 最近流水")
         if user_transactions:
-            trans_df = pd.DataFrame(user_transactions).sort_values(by="date", ascending=False)
-            st.dataframe(trans_df, use_container_width=True)
-        else:
-            st.info("您还没有任何流水记录。")
+            st.dataframe(pd.DataFrame(user_transactions).sort_values(by="date", ascending=False), use_container_width=True)
+        else: st.info("您还没有任何流水记录。")
 
     with tab2:
         st.subheader("📈 股价图表")
         if tickers_to_fetch:
-            # ... (股价图表逻辑保持不变) ...
             ts = TimeSeries(key=st.secrets["alpha_vantage"]["api_key"], output_format='pandas')
-            all_data, failed_tickers = [], []
+            all_data, failed_tickers = [], [],
             for ticker in tickers_to_fetch:
                 try:
                     data, _ = ts.get_daily(symbol=ticker, outputsize='compact')
-                    close_data = data['4. close']; close_data.name = ticker
-                    all_data.append(close_data)
+                    all_data.append(data['4. close'].rename(ticker))
                 except: failed_tickers.append(ticker)
-            if all_data:
-                st.line_chart(pd.concat(all_data, axis=1).iloc[::-1])
+            if all_data: st.line_chart(pd.concat(all_data, axis=1).iloc[::-1])
             if failed_tickers: st.warning(f"无法获取以下股票的数据: {', '.join(failed_tickers)}")
-        else:
-            st.info("没有持仓股票可供显示图表。")
+        else: st.info("没有持仓股票可供显示图表。")
 
     with tab3:
         st.subheader("⚙️ 管理资产")
-        
+
         st.subheader("编辑现金账户")
         edited_cash_accounts = st.data_editor(cash_accounts, num_rows="dynamic", key="cash_editor", column_config={"name": "账户名称", "balance": st.column_config.NumberColumn("余额", format="$%.2f")})
-        if st.button("保存现金账户"):
-            user_data["users"][current_user_email]["portfolio"]["cash_accounts"] = edited_cash_accounts
+        if st.button("💾 保存对现金账户的修改"):
+            valid_accounts = [acc for acc in edited_cash_accounts if acc.get("name")]
+            user_data["users"][current_user_email]["portfolio"]["cash_accounts"] = valid_accounts
             if save_user_data_to_onedrive(user_data):
-                st.success("现金账户已更新！")
-                time.sleep(1); st.rerun()
+                st.success("现金账户已更新！"); time.sleep(1); st.rerun()
+
+        with st.expander("➕ 添加新的现金账户"):
+            with st.form("new_cash_account_form", clear_on_submit=True):
+                new_acc_name = st.text_input("账户名称 (例如: 微信零钱)")
+                new_acc_balance = st.number_input("初始余额", value=0.0, format="%.2f")
+                if st.form_submit_button("添加账户"):
+                    if new_acc_name:
+                        user_data["users"][current_user_email]["portfolio"]["cash_accounts"].append({"name": new_acc_name, "balance": new_acc_balance})
+                        if save_user_data_to_onedrive(user_data):
+                            st.success(f"账户 '{new_acc_name}' 已添加！"); time.sleep(1); st.rerun()
+                    else: st.warning("账户名称不能为空。")
 
         st.write("---")
         st.subheader("编辑股票持仓")
         edited_stocks = st.data_editor(stock_holdings, num_rows="dynamic", key="stock_editor", column_config={"ticker": "股票代码", "quantity": st.column_config.NumberColumn("数量", format="%.2f")})
-        if st.button("保存股票持仓"):
-            user_data["users"][current_user_email]["portfolio"]["stocks"] = edited_stocks
+        if st.button("💾 保存对股票持仓的修改"):
+            valid_stocks = [s for s in edited_stocks if s.get("ticker")]
+            user_data["users"][current_user_email]["portfolio"]["stocks"] = valid_stocks
             if save_user_data_to_onedrive(user_data):
-                st.success("股票持仓已更新！")
-                time.sleep(1); st.rerun()
+                st.success("股票持仓已更新！"); time.sleep(1); st.rerun()
+        
+        with st.expander("➕ 添加新的股票持仓"):
+            with st.form("new_stock_form", clear_on_submit=True):
+                new_stock_ticker = st.text_input("股票代码 (例如: AAPL)").upper()
+                new_stock_quantity = st.number_input("持有数量", value=0.0, format="%.2f")
+                if st.form_submit_button("添加持仓"):
+                    if new_stock_ticker:
+                        user_data["users"][current_user_email]["portfolio"]["stocks"].append({"ticker": new_stock_ticker, "quantity": new_stock_quantity})
+                        if save_user_data_to_onedrive(user_data):
+                            st.success(f"持仓 '{new_stock_ticker}' 已添加！"); time.sleep(1); st.rerun()
+                    else: st.warning("股票代码不能为空。")
 
         st.write("---")
         st.subheader("记录一笔新流水")
@@ -271,39 +279,25 @@ def display_dashboard():
             trans_type = st.selectbox("类型", ["收入", "支出", "买入股票", "卖出股票"])
             description = st.text_input("描述")
             amount = st.number_input("金额", min_value=0.0, format="%.2f")
-            
-            # --- 新增: 选择现金账户 ---
             account_names = [acc.get("name", "") for acc in cash_accounts]
-            if not account_names:
-                st.warning("请先至少创建一个现金账户。")
-            else:
-                affected_account_name = st.selectbox("选择现金账户", options=account_names)
+            affected_account_name = st.selectbox("选择现金账户", options=account_names) if account_names else None
             
             if trans_type in ["买入股票", "卖出股票"]:
                 ticker = st.text_input("股票代码").upper()
                 quantity = st.number_input("数量", min_value=0.0)
 
             if st.form_submit_button("记录流水"):
-                if not account_names:
-                    st.error("操作失败：没有可用的现金账户。")
-                    st.stop()
+                if affected_account_name is None:
+                    st.error("操作失败：请先至少创建一个现金账户。"); st.stop()
                 
-                new_transaction = {"date": datetime.now().strftime("%Y-%m-%d"), "type": trans_type, "description": description, "amount": amount, "account": affected_account_name}
+                new_transaction = {"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": trans_type, "description": description, "amount": amount, "account": affected_account_name}
                 
-                # 找到被影响的账户并更新余额
-                account_found = False
                 for acc in user_data["users"][current_user_email]["portfolio"]["cash_accounts"]:
                     if acc.get("name") == affected_account_name:
-                        if trans_type == "收入":
-                            acc["balance"] += amount
-                        elif trans_type == "支出":
-                            acc["balance"] -= amount
-                            new_transaction["amount"] = -amount
-                        elif trans_type == "买入股票":
-                            acc["balance"] -= amount
-                        elif trans_type == "卖出股票":
-                            acc["balance"] += amount
-                        account_found = True
+                        if trans_type == "收入": acc["balance"] += amount
+                        elif trans_type == "支出": acc["balance"] -= amount; new_transaction["amount"] = -amount
+                        elif trans_type == "买入股票": acc["balance"] -= amount
+                        elif trans_type == "卖出股票": acc["balance"] += amount
                         break
                 
                 if trans_type in ["买入股票", "卖出股票"]:
@@ -315,22 +309,18 @@ def display_dashboard():
                         if current_holdings.get(ticker, 0) < quantity:
                             st.error("卖出数量超过持有数量！"); st.stop()
                         current_holdings[ticker] -= quantity
-                    
                     user_data["users"][current_user_email]["portfolio"]["stocks"] = [{"ticker": t, "quantity": q} for t, q in current_holdings.items() if q > 0]
 
                 user_transactions.append(new_transaction)
                 if save_user_data_to_onedrive(user_data):
-                    st.success("流水记录成功！")
-                    time.sleep(1); st.rerun()
+                    st.success("流水记录成功！"); time.sleep(1); st.rerun()
 
 # --- 主程序渲染 ---
 if st.session_state.logged_in:
     with st.sidebar:
         st.success(f"欢迎, {st.session_state.user_email}")
         if st.button("退出登录"):
-            st.session_state.logged_in = False
-            st.session_state.user_email = ""
-            st.session_state.login_step = "enter_email"
+            st.session_state.logged_in = False; st.session_state.user_email = ""; st.session_state.login_step = "enter_email"
             st.rerun()
     display_dashboard()
     if st.session_state.user_email == ADMIN_EMAIL:
