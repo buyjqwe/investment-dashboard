@@ -408,20 +408,137 @@ def display_dashboard():
         with st.expander("⚙️ 编辑现有资产"):
             m_tab1, m_tab2, m_tab3 = st.tabs(["💵 现金账户", "📈 股票持仓", "🪙 加密货币"])
             with m_tab1:
+                original_cash_map = {acc['name']: acc.copy() for acc in cash_accounts}
                 edited_cash = st.data_editor(cash_accounts, num_rows="dynamic", key="cash_editor", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True)
+                
                 if st.button("💾 保存现金账户修改"):
+                    for edited_account in edited_cash:
+                        account_name = edited_account.get('name')
+                        original_account = original_cash_map.get(account_name)
+
+                        if original_account:
+                            original_balance = original_account.get('balance', 0)
+                            new_balance = edited_account.get('balance', 0)
+                            delta = new_balance - original_balance
+
+                            if abs(delta) > 0.001:
+                                trans_type = "收入" if delta > 0 else "支出"
+                                amount = abs(delta)
+                                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                
+                                new_trans = {
+                                    "date": now_str, "type": trans_type, "description": "手动调整余额",
+                                    "amount": amount, "currency": edited_account.get("currency"),
+                                    "account": account_name
+                                }
+                                user_profile.setdefault("transactions", []).append(new_trans)
+                    
                     user_portfolio["cash_accounts"] = [a for a in edited_cash if a.get("name") and a.get("currency")]
-                    if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
+                    if save_user_profile(st.session_state.user_email, user_profile): 
+                        st.success("现金账户已更新，并已自动记录收支流水！")
+                        time.sleep(1)
+                        st.rerun()
+
             with m_tab2:
+                original_stock_map = {s['ticker']: s.copy() for s in stock_holdings}
                 edited_stocks = st.data_editor(stock_holdings, num_rows="dynamic", key="stock_editor", column_config={"ticker": "股票代码", "quantity": st.column_config.NumberColumn("数量", format="%.2f"),"currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True)}, use_container_width=True)
+                
                 if st.button("💾 保存股票持仓修改"):
+                    for edited_stock in edited_stocks:
+                        ticker = edited_stock.get('ticker')
+                        original_stock = original_stock_map.get(ticker)
+                        
+                        if original_stock: 
+                            original_quantity = original_stock.get('quantity', 0)
+                            new_quantity = edited_stock.get('quantity', 0)
+                            delta = new_quantity - original_quantity
+
+                            if abs(delta) > 0.000001:
+                                current_price = prices.get(ticker, 0)
+                                amount = abs(delta) * current_price
+                                
+                                if amount > 0.01:
+                                    target_currency = edited_stock.get("currency", "USD")
+                                    suitable_account = next((acc for acc in cash_accounts if acc.get("currency") == target_currency), None)
+                                    if not suitable_account: suitable_account = next((acc for acc in cash_accounts if acc.get("currency") == "USD"), None)
+                                    if not suitable_account and cash_accounts: suitable_account = cash_accounts[0]
+                                    
+                                    if suitable_account:
+                                        trans_type = "买入股票" if delta > 0 else "卖出股票"
+                                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                        
+                                        cash_account_to_update = next(acc for acc in user_portfolio["cash_accounts"] if acc["name"] == suitable_account["name"])
+                                        rate_adjustment = exchange_rates.get(suitable_account['currency'], 1) / exchange_rates.get(target_currency, 1)
+                                        
+                                        if trans_type == "买入股票":
+                                            cash_account_to_update["balance"] -= amount * rate_adjustment
+                                        else: 
+                                            cash_account_to_update["balance"] += amount * rate_adjustment
+
+                                        new_trans = {
+                                            "date": now_str, "type": trans_type, "description": f"手动调整持仓 ({ticker})",
+                                            "amount": amount * rate_adjustment, "currency": suitable_account["currency"],
+                                            "account": suitable_account["name"], "symbol": ticker, "quantity": abs(delta)
+                                        }
+                                        user_profile.setdefault("transactions", []).append(new_trans)
+                                    else:
+                                        st.warning(f"无法为 {ticker} 的调整自动生成流水，因为没有找到合适的现金账户。")
+
                     user_portfolio["stocks"] = [s for s in edited_stocks if s.get("ticker") and s.get("currency")]
-                    if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新！"); time.sleep(1); st.rerun()
+                    if save_user_profile(st.session_state.user_email, user_profile): 
+                        st.success("股票持仓已更新，并已自动记录相关流水！")
+                        time.sleep(1)
+                        st.rerun()
+
             with m_tab3:
+                original_crypto_map = {c['symbol']: c.copy() for c in crypto_holdings}
                 edited_crypto = st.data_editor(crypto_holdings, num_rows="dynamic", key="crypto_editor", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f")}, use_container_width=True)
+
                 if st.button("💾 保存加密货币持仓修改"):
+                    for edited_c in edited_crypto:
+                        symbol = edited_c.get('symbol')
+                        original_c = original_crypto_map.get(symbol)
+
+                        if original_c:
+                            original_quantity = original_c.get('quantity', 0)
+                            new_quantity = edited_c.get('quantity', 0)
+                            delta = new_quantity - original_quantity
+
+                            if abs(delta) > 0.00000001:
+                                current_price = prices.get(symbol, 0)
+                                amount_usd = abs(delta) * current_price
+                                
+                                if amount_usd > 0.01:
+                                    suitable_account = next((acc for acc in cash_accounts if acc.get("currency") == "USD"), None)
+                                    if not suitable_account and cash_accounts: suitable_account = cash_accounts[0]
+                                    
+                                    if suitable_account:
+                                        trans_type = "买入加密货币" if delta > 0 else "卖出加密货币"
+                                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                                        
+                                        cash_account_to_update = next(acc for acc in user_portfolio["cash_accounts"] if acc["name"] == suitable_account["name"])
+                                        rate_adjustment = exchange_rates.get(suitable_account['currency'], 1)
+                                        adjusted_amount = amount_usd * rate_adjustment
+                                        
+                                        if trans_type == "买入加密货币":
+                                            cash_account_to_update["balance"] -= adjusted_amount
+                                        else:
+                                            cash_account_to_update["balance"] += adjusted_amount
+
+                                        new_trans = {
+                                            "date": now_str, "type": trans_type, "description": f"手动调整持仓 ({symbol})",
+                                            "amount": adjusted_amount, "currency": suitable_account["currency"],
+                                            "account": suitable_account["name"], "symbol": symbol, "quantity": abs(delta)
+                                        }
+                                        user_profile.setdefault("transactions", []).append(new_trans)
+                                    else:
+                                        st.warning(f"无法为 {symbol} 的调整自动生成流水，因为没有找到合适的现金账户。")
+
                     user_portfolio["crypto"] = [c for c in edited_crypto if c.get("symbol")]
-                    if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新！"); time.sleep(1); st.rerun()
+                    if save_user_profile(st.session_state.user_email, user_profile): 
+                        st.success("加密货币持仓已更新，并已自动记录相关流水！")
+                        time.sleep(1)
+                        st.rerun()
 
     with tab3:
         sub_tab1, sub_tab2 = st.tabs(["历史趋势", "变动归因"])
