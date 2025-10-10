@@ -198,7 +198,7 @@ def update_asset_snapshot(email, user_profile, total_assets_usd, total_liabiliti
         save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/history/{get_email_hash(email)}/{today_str}.json", snapshot)
 
 @st.cache_data(ttl=3600)
-@st.cache_data(ttl=3600)
+
 def get_detailed_ai_analysis(prompt):
     try:
         account_id, api_token, model = CF_CONFIG['account_id'], CF_CONFIG['api_token'], "@cf/meta/llama-3-8b-instruct"
