@@ -70,9 +70,9 @@ def onedrive_api_request(method, path, headers, data=None):
     if method.lower() == 'put':
         return requests.put(url, headers=headers, data=data)
     if method.lower() == 'post':
-         return requests.post(url, headers=headers, data=data)
+        return requests.post(url, headers=headers, data=data)
     if method.lower() == 'patch':
-         return requests.patch(url, headers=headers, data=data)
+        return requests.patch(url, headers=headers, data=data)
     return None
 
 def get_onedrive_data(path, is_json=True):
@@ -86,15 +86,15 @@ def get_onedrive_data(path, is_json=True):
         return resp.json() if is_json else resp.text
     except Exception as e:
         if "404" not in str(e):
-             st.error(f"从 OneDrive 加载数据失败 ({path}): {e}")
+            st.error(f"从 OneDrive 加载数据失败 ({path}): {e}")
         return None
 
 def save_onedrive_data(path, data):
     try:
         token = get_ms_graph_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        json_data = json.dumps(data, indent=2)
-        onedrive_api_request('put', f"{path}:/content", headers, data=json_data)
+        json_data = json.dumps(data, indent=2, ensure_ascii=False)
+        onedrive_api_request('put', f"{path}:/content", headers, data=json_data.encode('utf-8'))
         return True
     except Exception as e:
         st.error(f"保存数据到 OneDrive 失败 ({path}): {e}")
@@ -290,13 +290,13 @@ def get_ai_analysis(period_days, total_change, market_change, cash_flow, fx_chan
 
     Data:
     - Total Net Worth Change: {display_symbol}{total_change:,.2f}
-    - Market Fluctuation Impact: {display_symbol}{market_change:,.2f}
-    - Net Cash Flow (Income - Expense): {display_symbol}{cash_flow:,.2f}
-    - Currency Exchange Rate Fluctuation Impact: {display_symbol}{fx_change:,.2f}
+    - Investment Value Change (stocks, crypto): {display_symbol}{market_change:,.2f}
+    - Net Cash & Liability Change (income, expenses, debt): {display_symbol}{cash_flow:,.2f}
+    - Currency Exchange & Other Factors Impact: {display_symbol}{fx_change:,.2f}
 
     Instructions:
     1. Start with a clear, one-sentence summary of the overall performance (positive, negative, or stable).
-    2. Identify the BIGGEST driver of the change (market, cash flow, or fx). Explain it simply.
+    2. Identify the BIGGEST driver of the change (investments, cash flow, or fx). Explain it simply.
     3. Briefly mention the other contributing factors.
     4. Keep the tone encouraging and professional. Do not sound like a robot.
     """
@@ -335,7 +335,7 @@ def display_login_form():
                 st.session_state.login_step = "enter_email"; st.rerun()
 
 def display_admin_panel():
-     with st.sidebar:
+    with st.sidebar:
         st.header("👑 管理员面板")
         st.info("管理员功能待适配新数据结构。")
 
@@ -462,14 +462,45 @@ def display_dashboard():
 
             if st.form_submit_button("记录流水"):
                 if from_account_name is None: st.error("操作失败：请先至少创建一个现金账户。"); st.stop()
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M"); from_account = next(acc for acc in cash_accounts if acc["name"] == from_account_name)
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M"); 
+                from_account = next((acc for acc in cash_accounts if acc["name"] == from_account_name), None)
+
+                ## FIX: Implemented full transaction logic for all types and added transaction logging.
+                new_transaction = {
+                    "date": now_str,
+                    "type": trans_type,
+                    "description": description,
+                    "amount": amount,
+                    "currency": from_account["currency"],
+                    "account": from_account_name
+                }
+
+                if trans_type == "收入":
+                    from_account["balance"] += amount
                 
-                if "买入" in trans_type:
+                elif trans_type == "支出":
                     from_account["balance"] -= amount
-                    price_per_unit = amount / quantity if quantity > 0 else 0
+
+                elif trans_type == "转账":
+                    if to_account_name:
+                        to_account = next((acc for acc in cash_accounts if acc["name"] == to_account_name), None)
+                        if to_account:
+                            if from_account['currency'] != to_account['currency']:
+                                st.error("跨币种转账暂不支持，请分步操作。"); st.stop()
+                            from_account["balance"] -= amount
+                            to_account["balance"] += amount
+                            new_transaction["details"] = f"从 {from_account_name} 转至 {to_account_name}"
+                        else: st.error("转入账户未找到！"); st.stop()
+                    else: st.error("请选择转入账户！"); st.stop()
+
+                elif "买入" in trans_type:
+                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
+                    from_account["balance"] -= amount
+                    price_per_unit = amount / quantity
                     asset_list = stock_holdings if "股票" in trans_type else crypto_holdings
                     symbol_key = "ticker" if "股票" in trans_type else "symbol"
-                    holding = next((h for h in asset_list if h[symbol_key] == symbol), None)
+                    
+                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
                     if holding:
                         new_total_cost = (holding.get('average_cost',0) * holding.get('quantity',0)) + amount
                         holding['quantity'] = holding.get('quantity',0) + quantity
@@ -478,23 +509,55 @@ def display_dashboard():
                         new_holding = {symbol_key: symbol, "quantity": quantity, "average_cost": price_per_unit}
                         if "股票" in trans_type: new_holding["currency"] = from_account['currency']
                         asset_list.append(new_holding)
+                    new_transaction.update({"symbol": symbol, "quantity": quantity, "price": price_per_unit})
                 
-                if save_user_profile(st.session_state.user_email, user_profile): st.success("流水记录成功！"); time.sleep(1); st.rerun()
+                elif "卖出" in trans_type:
+                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
+                    from_account["balance"] += amount
+                    price_per_unit = amount / quantity
+                    asset_list = stock_holdings if "股票" in trans_type else crypto_holdings
+                    symbol_key = "ticker" if "股票" in trans_type else "symbol"
+                    
+                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
+                    if not holding or holding.get('quantity', 0) < quantity:
+                        st.error(f"卖出失败：{symbol} 数量不足。"); st.stop()
+                    
+                    realized_pl = (price_per_unit - holding.get('average_cost', 0)) * quantity
+                    st.toast(f"实现盈亏: {realized_pl:,.2f} {from_account['currency']}")
+                    holding['quantity'] -= quantity
+                    
+                    if holding['quantity'] < 1e-9: # If sold all, remove holding
+                        asset_list.remove(holding)
+                    new_transaction.update({"symbol": symbol, "quantity": quantity, "price": price_per_unit})
+
+                user_profile.setdefault("transactions", []).insert(0, new_transaction) # Add to transaction log
+                
+                if save_user_profile(st.session_state.user_email, user_profile): 
+                    st.success("流水记录成功！"); time.sleep(1); st.rerun()
 
         st.subheader("📑 交易流水")
+        transactions_df = pd.DataFrame(user_profile.get("transactions", []))
         with st.expander("筛选与搜索流水"):
-            transactions_df = pd.DataFrame(user_profile.get("transactions", []))
             if not transactions_df.empty:
                 f_col1, f_col2, f_col3 = st.columns(3)
                 start_date = f_col1.date_input("开始日期", value=None)
                 end_date = f_col2.date_input("结束日期", value=None)
-                selected_types = f_col3.multiselect("类型", options=transactions_df['type'].unique())
+                
+                all_types = transactions_df['type'].unique()
+                selected_types = f_col3.multiselect("类型", options=all_types, default=list(all_types))
                 search_term = st.text_input("搜索描述")
 
-                if start_date: transactions_df = transactions_df[pd.to_datetime(transactions_df['date']).dt.date >= start_date]
-                if end_date: transactions_df = transactions_df[pd.to_datetime(transactions_df['date']).dt.date <= end_date]
+                # Ensure date column is datetime for comparison
+                transactions_df['date_dt'] = pd.to_datetime(transactions_df['date'])
+
+                if start_date: transactions_df = transactions_df[transactions_df['date_dt'].dt.date >= start_date]
+                if end_date: transactions_df = transactions_df[transactions_df['date_dt'].dt.date <= end_date]
                 if selected_types: transactions_df = transactions_df[transactions_df['type'].isin(selected_types)]
                 if search_term: transactions_df = transactions_df[transactions_df['description'].str.contains(search_term, case=False, na=False)]
+                
+                # Drop the temporary datetime column before displaying
+                transactions_df = transactions_df.drop(columns=['date_dt'])
+
         st.dataframe(transactions_df.sort_values(by="date", ascending=False) if not transactions_df.empty else pd.DataFrame(), use_container_width=True, hide_index=True)
 
         with st.expander("⚙️ 编辑现有资产与负债 (危险操作，将自动生成流水)"):
@@ -542,15 +605,25 @@ def display_dashboard():
                 schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
                 df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
+                ## FIX: Implemented save logic for the stock editor.
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
-                    pass # Placeholder for brevity
+                    edited_list = edited_df.dropna(subset=['ticker']).to_dict('records')
+                    user_portfolio["stocks"] = edited_list
+                    if save_user_profile(st.session_state.user_email, user_profile):
+                        st.success("股票持仓已更新！(注意: 未自动生成流水)")
+                        time.sleep(1); st.rerun()
 
             with edit_tabs[3]:
                 schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
                 df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
                 edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
+                ## FIX: Implemented save logic for the crypto editor.
                 if st.button("💾 保存加密货币修改", key="save_crypto"):
-                    pass # Placeholder for brevity
+                    edited_list = edited_df.dropna(subset=['symbol']).to_dict('records')
+                    user_portfolio["crypto"] = edited_list
+                    if save_user_profile(st.session_state.user_email, user_profile):
+                        st.success("加密货币持仓已更新！(注意: 未自动生成流水)")
+                        time.sleep(1); st.rerun()
 
 
     with tab3:
@@ -602,13 +675,28 @@ def display_dashboard():
                 end_snapshot = asset_history[-1]; start_snapshot = asset_history[0]
                 total_change_usd = end_snapshot["net_worth_usd"] - start_snapshot["net_worth_usd"]
                 
+                ## FIX: Implemented a simplified but logical attribution model.
+                # This model calculates contributions based on the changes in aggregated asset classes.
                 market_change_usd, cash_flow_usd, fx_change_usd = 0.0, 0.0, 0.0
+
+                # 1. Change in Investment Value (Stocks + Crypto)
+                start_inv_usd = start_snapshot["total_stock_value_usd"] + start_snapshot["total_crypto_value_usd"]
+                end_inv_usd = end_snapshot["total_stock_value_usd"] + end_snapshot["total_crypto_value_usd"]
+                market_change_usd = end_inv_usd - start_inv_usd
+
+                # 2. Change in Net Cash (Cash - Liabilities)
+                start_net_cash_usd = start_snapshot["total_cash_balance_usd"] - start_snapshot["total_liabilities_usd"]
+                end_net_cash_usd = end_snapshot["total_cash_balance_usd"] - end_snapshot["total_liabilities_usd"]
+                cash_flow_usd = end_net_cash_usd - start_net_cash_usd
+
+                # 3. The residual is attributed to FX and other unaccounted factors.
+                fx_change_usd = total_change_usd - market_change_usd - cash_flow_usd
                 
                 st.metric(f"期间净资产变化 ({display_curr})", f"{display_symbol}{total_change_usd * display_rate:,.2f}")
                 col1, col2, col3 = st.columns(3)
-                col1.metric("📈 市场波动", f"{display_symbol}{market_change_usd * display_rate:,.2f}")
-                col2.metric("💸 资金流动", f"{display_symbol}{cash_flow_usd * display_rate:,.2f}")
-                col3.metric("💱 汇率影响", f"{display_symbol}{fx_change_usd * display_rate:,.2f}")
+                col1.metric("📈 投资价值变动", f"{display_symbol}{market_change_usd * display_rate:,.2f}")
+                col2.metric("💸 净现金流动", f"{display_symbol}{cash_flow_usd * display_rate:,.2f}")
+                col3.metric("💱 汇率及其它", f"{display_symbol}{fx_change_usd * display_rate:,.2f}")
 
                 st.markdown("---")
                 st.subheader("🤖 AI 投资顾问分析")
@@ -622,6 +710,7 @@ def display_dashboard():
 
 def run_migration():
     st.info("正在检查数据结构版本...")
+    # Placeholder for future data migration logic
     st.session_state.migration_done = True
     return
 
@@ -646,4 +735,3 @@ if st.session_state.logged_in:
         display_admin_panel()
 else:
     display_login_form()
-
