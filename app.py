@@ -30,11 +30,13 @@ if 'display_currency' not in st.session_state: st.session_state.display_currency
 if 'last_market_data_fetch' not in st.session_state: st.session_state.last_market_data_fetch = 0
 if 'migration_done' not in st.session_state: st.session_state.migration_done = False
 
+
 # --- API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
 ADMIN_EMAIL = MS_GRAPH_CONFIG["admin_email"]
 ONEDRIVE_SENDER_EMAIL = MS_GRAPH_CONFIG['sender_email']
 CF_CONFIG = st.secrets["cloudflare"]
+
 
 # --- 核心功能函数定义 ---
 def get_email_hash(email): return hashlib.sha256(email.encode('utf-8')).hexdigest()
@@ -270,7 +272,8 @@ def display_dashboard():
         market_data, prices, exchange_rates = st.session_state.get('market_data', {}), get_prices_from_market_data(st.session_state.get('market_data', {}), stock_tickers + crypto_symbols), st.session_state.get('exchange_rates', {})
         if not exchange_rates: st.error("无法加载汇率，资产总值不准确。"); st.stop()
 
-    failed_tickers = [ticker for ticker in (stock_tickers + crypto_symbols) if prices.get(ticker, 0) == 0]
+    all_holdings = user_portfolio.get("stocks", []) + user_portfolio.get("crypto", [])
+    failed_tickers = [h['ticker'] if 'ticker' in h else h['symbol'] for h in all_holdings if prices.get(h.get('ticker') or h.get('symbol'), 0) == 0]
     if failed_tickers:
         st.warning(f"警告：未能获取以下资产的价格，其市值可能显示为0: {', '.join(failed_tickers)}")
 
@@ -281,7 +284,7 @@ def display_dashboard():
     total_assets_usd, total_liabilities_usd = total_stock_value_usd + total_cash_balance_usd + total_crypto_value_usd, sum(liab.get('balance',0) / exchange_rates.get(liab.get('currency', 'USD'), 1) for liab in liabilities)
     net_worth_usd = total_assets_usd - total_liabilities_usd
     
-    if analysis_mode == "实时数据":
+    if analysis_mode == "实时数据" and user_profile is not None:
         update_asset_snapshot(st.session_state.user_email, user_profile, total_assets_usd, total_liabilities_usd, total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, exchange_rates)
 
     display_curr = st.sidebar.selectbox("选择显示货币", options=SUPPORTED_CURRENCIES, key="display_currency")
@@ -390,12 +393,13 @@ def display_dashboard():
             with st.expander("⚙️ 编辑现有资产与负债 (危险操作)"):
                 edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
                 def to_df_with_schema(data, schema):
-                    df = pd.DataFrame(data);
+                    df = pd.DataFrame(data)
                     for col, col_type in schema.items():
                         if col not in df.columns: df[col] = pd.Series(dtype=col_type)
                     return df
                 with edit_tabs[0]:
-                    schema, df = {'name': 'object', 'currency': 'object', 'balance': 'float64'}, to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
+                    schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
+                    df = to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
                     edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
                     if st.button("💾 保存现金账户修改", key="save_cash"):
                         edited_list, original_map = edited_df.dropna(subset=['name']).to_dict('records'), {acc['name']: acc for acc in deepcopy(user_portfolio["cash_accounts"])}
@@ -407,7 +411,8 @@ def display_dashboard():
                         user_portfolio["cash_accounts"] = edited_list
                         if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
                 with edit_tabs[1]:
-                    schema, df = {'name': 'object', 'currency': 'object', 'balance': 'float64'}, to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
+                    schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
+                    df = to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
                     edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
                     if st.button("💾 保存负债账户修改", key="save_liabilities"):
                         edited_list, original_map = edited_df.dropna(subset=['name']).to_dict('records'), {liab['name']: liab for liab in deepcopy(user_portfolio["liabilities"])}
@@ -419,7 +424,8 @@ def display_dashboard():
                         user_portfolio["liabilities"] = edited_list
                         if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新！"); time.sleep(1); st.rerun()
                 with edit_tabs[2]:
-                    schema, df = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}, to_df_with_schema(user_portfolio.get("stocks",[]), schema)
+                    schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
+                    df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
                     edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", disabled=True)})
                     if st.button("💾 保存股票持仓修改", key="save_stocks"):
                         edited_list, original_tickers, invalid_new_tickers = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records'), {s['ticker'] for s in deepcopy(user_portfolio.get("stocks", []))}, []
@@ -433,7 +439,8 @@ def display_dashboard():
                         user_portfolio["stocks"] = edited_list
                         if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新！"); time.sleep(1); st.rerun()
                 with edit_tabs[3]:
-                    schema, df = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}, to_df_with_schema(user_portfolio.get("crypto",[]), schema)
+                    schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
+                    df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
                     edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)})
                     if st.button("💾 保存加密货币修改", key="save_crypto"):
                         edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
@@ -488,7 +495,7 @@ def display_dashboard():
         if analysis_mode == "历史快照":
             if start_snapshot and end_snapshot:
                 st.write(f"#### 分析周期: {start_snapshot['date']}  ➡️  {end_snapshot['date']}")
-                prompt = f"""你是一位专业的投资组合分析师。请基于以下用户在两个时间点的匿名投资组合数据，进行详细的对比分析...""" # Placeholder
+                prompt = f"""你是一位专业的投资组合分析师... (历史对比模式Prompt)""" # Placeholder
             else:
                 st.warning("历史快照数据不足，无法进行对比分析。"); show_button = False
         else:
