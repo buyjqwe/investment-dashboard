@@ -198,12 +198,19 @@ def update_asset_snapshot(email, user_profile, total_assets_usd, total_liabiliti
         save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/history/{get_email_hash(email)}/{today_str}.json", snapshot)
 
 @st.cache_data(ttl=3600)
+@st.cache_data(ttl=3600)
 def get_detailed_ai_analysis(prompt):
     try:
         account_id, api_token, model = CF_CONFIG['account_id'], CF_CONFIG['api_token'], "@cf/meta/llama-3-8b-instruct"
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
         headers = {"Authorization": f"Bearer {api_token}"}
-        response = requests.post(url, headers=headers, json={"prompt": prompt, "stream": False}, timeout=60)
+        # --- FIX: Explicitly set a higher max_tokens limit ---
+        payload = {
+            "prompt": prompt,
+            "stream": False,
+            "max_tokens": 9999
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
         return response.json().get("result", {}).get("response", "AI 分析时出现错误或超时。")
     except Exception as e: return f"无法连接到 AI 服务进行分析: {e}"
