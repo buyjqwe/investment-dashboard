@@ -25,25 +25,6 @@ SESSION_EXPIRATION_DAYS = 7
 DATA_REFRESH_INTERVAL_SECONDS = 3600 # 1 hour
 BASE_ONEDRIVE_PATH = "root:/Apps/StreamlitDashboard" # Base path for structured data
 
-POPULAR_STOCKS = {
-    # US Tech & Blue Chips
-    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "TSLA", "META", "BRK-B", "JPM", "JNJ", "V", "PG", "MA", "HD", "UNH", "DIS", "BAC", "PYPL", "NFLX", "ADBE", "CRM", "KO", "PEP",
-    # US ETFs
-    "SPY", "QQQ", "IVV", "VTI", "VOO", "VEA", "VWO", "GLD", "BND",
-    # Hong Kong
-    "0700.HK", "9988.HK", "3690.HK", "1299.HK", "0941.HK", "0005.HK", "2318.HK", "0388.HK", "0001.HK", "0016.HK",
-    # China A-Shares
-    "600519.SS", "601318.SS", "600036.SS",
-    # Japan
-    "7203.T", "9984.T", "6758.T",
-    # Europe
-    "ASML.AS", "LVMHF", "SAP"
-}
-POPULAR_CRYPTO = {
-    "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "SHIB", "AVAX", "DOT", "LINK", "TRX", "MATIC", "LTC", "BCH", "USDT", "USDC"
-}
-
-
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -234,7 +215,6 @@ def get_all_market_data(stock_tickers, crypto_symbols):
                     "country": profile_map.get(ticker, {}).get('country', 'N/A')
                 } if ticker in price_map else None
         except Exception as e:
-            # FIX: Replaced 'pass' with an explicit warning to the user.
             st.warning(f"获取股票市场数据时出错: {e}")
             
     if crypto_symbols:
@@ -246,7 +226,6 @@ def get_all_market_data(stock_tickers, crypto_symbols):
             for symbol in crypto_symbols:
                 market_data[symbol] = {"latest_price": price_map[symbol]} if symbol in price_map else None
         except Exception as e:
-            # FIX: Replaced 'pass' with an explicit warning to the user.
             st.warning(f"获取加密货币市场数据时出错: {e}")
             
     return market_data
@@ -259,7 +238,7 @@ def get_stock_profile(symbol):
     """Fetches the profile for a single stock ticker to get its currency."""
     api_key = st.secrets["financialmodelingprep"]["api_key"]
     try:
-        p_response = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={api_key}")
+        p_response = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={api_key}", timeout=10)
         p_response.raise_for_status()
         p_data = p_response.json()
         if p_data and isinstance(p_data, list):
@@ -645,26 +624,32 @@ def display_dashboard():
             with edit_tabs[2]:
                 schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
                 df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-                existing_tickers = {s['ticker'] for s in user_portfolio.get("stocks", []) if s.get('ticker')}
-                stock_options = sorted(list(existing_tickers | POPULAR_STOCKS))
 
                 edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={
-                    "ticker": st.column_config.SelectboxColumn("代码", options=stock_options, required=True), 
+                    "ticker": st.column_config.TextColumn("代码", required=True), 
                     "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), 
                     "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f", required=True), 
                     "currency": st.column_config.TextColumn("货币", disabled=True)
                 })
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
                     edited_list = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records')
+                    original_tickers = {s['ticker'] for s in deepcopy(user_portfolio.get("stocks", []))}
+                    invalid_new_tickers = []
                     
                     for holding in edited_list:
-                        if not holding.get('currency') or pd.isna(holding.get('currency')):
-                            with st.spinner(f"正在获取 {holding['ticker']} 的货币信息..."):
+                        holding['ticker'] = holding['ticker'].upper()
+                        # Logic to validate new tickers and fill currency for any row that's missing it.
+                        if (holding['ticker'] not in original_tickers) or (not holding.get('currency') or pd.isna(holding.get('currency'))):
+                            with st.spinner(f"正在验证并获取 {holding['ticker']} 的信息..."):
                                 profile = get_stock_profile(holding['ticker'])
                             if profile and profile.get('currency'):
                                 holding['currency'] = profile['currency']
                             else:
-                                st.error(f"无法获取 {holding['ticker']} 的货币信息，保存失败。"); st.stop()
+                                invalid_new_tickers.append(holding['ticker'])
+                    
+                    if invalid_new_tickers:
+                        st.error(f"以下新增的代码无效或无法获取信息，保存失败: {', '.join(invalid_new_tickers)}")
+                        st.stop()
 
                     user_portfolio["stocks"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile):
@@ -674,16 +659,17 @@ def display_dashboard():
             with edit_tabs[3]:
                 schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
                 df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
-                existing_symbols = {c['symbol'] for c in user_portfolio.get("crypto", []) if c.get('symbol')}
-                crypto_options = sorted(list(existing_symbols | POPULAR_CRYPTO))
                 
                 edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={
-                    "symbol": st.column_config.SelectboxColumn("代码", options=crypto_options, required=True), 
+                    "symbol": st.column_config.TextColumn("代码", required=True), 
                     "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), 
                     "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)
                 })
                 if st.button("💾 保存加密货币修改", key="save_crypto"):
+                    # Basic validation can be added here if needed
                     edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
+                    for holding in edited_list:
+                        holding['symbol'] = holding['symbol'].upper()
                     user_portfolio["crypto"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile):
                         st.success("加密货币持仓已更新！")
