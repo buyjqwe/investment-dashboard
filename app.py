@@ -198,18 +198,12 @@ def update_asset_snapshot(email, user_profile, total_assets_usd, total_liabiliti
         save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/history/{get_email_hash(email)}/{today_str}.json", snapshot)
 
 @st.cache_data(ttl=3600)
-
 def get_detailed_ai_analysis(prompt):
     try:
         account_id, api_token, model = CF_CONFIG['account_id'], CF_CONFIG['api_token'], "@cf/meta/llama-3-8b-instruct"
         url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
         headers = {"Authorization": f"Bearer {api_token}"}
-        # --- FIX: Explicitly set a higher max_tokens limit ---
-        payload = {
-            "prompt": prompt,
-            "stream": False,
-            "max_tokens": 9999
-        }
+        payload = {"prompt": prompt, "stream": False, "max_tokens": 2048}
         response = requests.post(url, headers=headers, json=payload, timeout=60)
         response.raise_for_status()
         return response.json().get("result", {}).get("response", "AI 分析时出现错误或超时。")
@@ -415,7 +409,7 @@ def display_dashboard():
                 st.table(transactions_df)
             else:
                 st.write("暂无交易记录。")
-
+    
     with tab3:
         st.subheader("⚙️ 编辑现有资产与负债")
         st.warning("危险操作：直接修改资产可能导致数据不一致。推荐使用“交易管理”页的流水功能进行记录。")
