@@ -4,3 +4,4 @@ alpha_vantage
 requests
 plotly
 yfinance
+tabulate
