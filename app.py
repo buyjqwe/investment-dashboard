@@ -25,6 +25,25 @@ SESSION_EXPIRATION_DAYS = 7
 DATA_REFRESH_INTERVAL_SECONDS = 3600 # 1 hour
 BASE_ONEDRIVE_PATH = "root:/Apps/StreamlitDashboard" # Base path for structured data
 
+POPULAR_STOCKS = {
+    # US Tech & Blue Chips
+    "AAPL", "MSFT", "GOOGL", "GOOG", "AMZN", "NVDA", "TSLA", "META", "BRK-B", "JPM", "JNJ", "V", "PG", "MA", "HD", "UNH", "DIS", "BAC", "PYPL", "NFLX", "ADBE", "CRM", "KO", "PEP",
+    # US ETFs
+    "SPY", "QQQ", "IVV", "VTI", "VOO", "VEA", "VWO", "GLD", "BND",
+    # Hong Kong
+    "0700.HK", "9988.HK", "3690.HK", "1299.HK", "0941.HK", "0005.HK", "2318.HK", "0388.HK", "0001.HK", "0016.HK",
+    # China A-Shares
+    "600519.SS", "601318.SS", "600036.SS",
+    # Japan
+    "7203.T", "9984.T", "6758.T",
+    # Europe
+    "ASML.AS", "LVMHF", "SAP"
+}
+POPULAR_CRYPTO = {
+    "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "ADA", "SHIB", "AVAX", "DOT", "LINK", "TRX", "MATIC", "LTC", "BCH", "USDT", "USDC"
+}
+
+
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
@@ -149,13 +168,12 @@ def handle_verify_code(email, code):
     if code_info["code"] == code:
         user_profile = get_user_profile(email)
         if not user_profile:
-            # Create new user profile with cost basis fields
             user_profile = {
                 "role": "user", 
                 "portfolio": {
                     "stocks": [{"ticker": "AAPL", "quantity": 10, "currency": "USD", "average_cost": 150.0}], 
                     "cash_accounts": [{"name": "美元银行卡", "balance": 10000, "currency": "USD"}, {"name": "人民币支付宝", "balance": 2000, "currency": "CNY"}], 
-                    "crypto": [{"symbol": "BTC", "quantity": 1, "average_cost": 40000.0}],
+                    "crypto": [{"symbol": "BTC", "quantity": 0.1, "average_cost": 40000.0}],
                     "liabilities": [{"name": "信用卡", "balance": 500, "currency": "USD"}]
                 }, 
                 "transactions": []
@@ -225,6 +243,20 @@ def get_all_market_data(stock_tickers, crypto_symbols):
 
 def get_prices_from_cache(market_data):
     return {ticker: (data["latest_price"] if data and data.get("latest_price") is not None else 0) for ticker, data in market_data.items()}
+
+@st.cache_data(ttl=86400) # Cache for 24 hours as profile data is stable
+def get_stock_profile(symbol):
+    """Fetches the profile for a single stock ticker to get its currency."""
+    api_key = st.secrets["financialmodelingprep"]["api_key"]
+    try:
+        p_response = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={api_key}")
+        p_response.raise_for_status()
+        p_data = p_response.json()
+        if p_data and isinstance(p_data, list):
+            return p_data[0] # Return the first element if it's a list
+    except Exception:
+        return None
+    return None
 
 @st.cache_data(ttl=3600)
 def get_historical_data(symbol, days=365):
@@ -378,7 +410,7 @@ def display_dashboard():
             st.session_state.market_data = get_all_market_data(stock_tickers, crypto_symbols)
             st.session_state.exchange_rates = get_exchange_rates()
             st.session_state.last_market_data_fetch = now
-            st.session_state.last_fetched_tickers = current_tickers # Store the new set of tickers
+            st.session_state.last_fetched_tickers = current_tickers
             st.rerun()
     
     market_data = st.session_state.get('market_data', {}); prices = get_prices_from_cache(market_data)
@@ -413,12 +445,20 @@ def display_dashboard():
         stock_df_data = []
         for s in stock_holdings:
             current_price = prices.get(s['ticker'], 0)
-            market_value = s.get('quantity',0) * current_price
+            market_value = s.get('quantity', 0) * current_price
             avg_cost = s.get('average_cost', 0)
-            cost_basis = s.get('quantity',0) * avg_cost
+            cost_basis = s.get('quantity', 0) * avg_cost
             unrealized_pl = market_value - cost_basis
             return_pct = (unrealized_pl / cost_basis * 100) if cost_basis > 0 else 0
-            stock_df_data.append({"代码": s['ticker'], "数量": s['quantity'], "货币": s['currency'], "成本价": f"{avg_cost:,.2f}", "现价": f"{current_price:,.2f}", "市值": f"{market_value:,.2f}", "未实现盈亏": f"{unrealized_pl:,.2f}", "回报率(%)": f"{return_pct:.2f}%"})
+            
+            currency_symbol = CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')
+
+            stock_df_data.append({
+                "代码": s['ticker'], "数量": s['quantity'], "货币": s['currency'], 
+                "成本价": f"{currency_symbol}{avg_cost:,.2f}", "现价": f"{currency_symbol}{current_price:,.2f}", 
+                "市值": f"{currency_symbol}{market_value:,.2f}", "未实现盈亏": f"{currency_symbol}{unrealized_pl:,.2f}", 
+                "回报率(%)": f"{return_pct:.2f}%"
+            })
         st.write("📈 **股票持仓**"); st.dataframe(pd.DataFrame(stock_df_data), use_container_width=True, hide_index=True)
         
         c1, c2, c3 = st.columns(3)
@@ -429,16 +469,21 @@ def display_dashboard():
             crypto_df_data = []
             for c in crypto_holdings:
                 current_price = prices.get(c['symbol'], 0)
-                market_value = c.get('quantity',0) * current_price
+                market_value = c.get('quantity', 0) * current_price
                 avg_cost = c.get('average_cost', 0)
-                cost_basis = c.get('quantity',0) * avg_cost
+                cost_basis = c.get('quantity', 0) * avg_cost
                 unrealized_pl = market_value - cost_basis
                 return_pct = (unrealized_pl / cost_basis * 100) if cost_basis > 0 else 0
-                crypto_df_data.append({"代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", "成本价": f"${avg_cost:,.2f}", "现价": f"${current_price:,.2f}", "市值": f"${market_value:,.2f}", "未实现盈亏": f"${unrealized_pl:,.2f}", "回报率(%)": f"{return_pct:.2f}%"})
+                currency_symbol = CURRENCY_SYMBOLS.get("USD", "$")
+                crypto_df_data.append({
+                    "代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", 
+                    "成本价": f"{currency_symbol}{avg_cost:,.2f}", "现价": f"{currency_symbol}{current_price:,.2f}", 
+                    "市值": f"{currency_symbol}{market_value:,.2f}", "未实现盈亏": f"{currency_symbol}{unrealized_pl:,.2f}", 
+                    "回报率(%)": f"{return_pct:.2f}%"
+                })
             st.dataframe(pd.DataFrame(crypto_df_data), use_container_width=True, hide_index=True)
         with c3:
             st.write("💳 **负债账户**"); st.dataframe(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]), use_container_width=True, hide_index=True)
-
 
     with tab2:
         st.subheader("✍️ 记录一笔新流水")
@@ -446,15 +491,15 @@ def display_dashboard():
             trans_type = st.selectbox("类型", ["收入", "支出", "买入股票", "卖出股票", "买入加密货币", "卖出加密货币", "转账"])
             col1, col2 = st.columns(2)
             with col1:
-                description = st.text_input("描述"); amount = st.number_input("总金额", min_value=0.0, format="%.2f")
+                description = st.text_input("描述"); amount = st.number_input("总金额 (从现金账户支出或收入的金额)", min_value=0.01, format="%.2f")
                 account_names = [acc.get("name", "") for acc in cash_accounts]
                 from_account_name = st.selectbox("选择现金账户", options=account_names, key="from_acc") if account_names else None
             with col2:
                 symbol, quantity, to_account_name = "", 0.0, None
                 if "股票" in trans_type or "加密货币" in trans_type:
                     symbol = st.text_input("资产代码").upper()
-                    if "股票" in trans_type: quantity = st.number_input("数量", min_value=0.0, format="%.2f", key="qty_stock")
-                    else: quantity = st.number_input("数量", min_value=0.0, format="%.8f", key="qty_crypto")
+                    if "股票" in trans_type: quantity = st.number_input("数量", min_value=1e-4, format="%.4f", key="qty_stock")
+                    else: quantity = st.number_input("数量", min_value=1e-8, format="%.8f", key="qty_crypto")
                     if symbol and quantity > 0:
                         est_price = prices.get(symbol, 0)
                         if est_price > 0: st.info(f"按当前市价估算总金额: {est_price * quantity:,.2f}")
@@ -465,75 +510,70 @@ def display_dashboard():
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M"); 
                 from_account = next((acc for acc in cash_accounts if acc["name"] == from_account_name), None)
 
-                ## FIX: Implemented full transaction logic for all types and added transaction logging.
-                new_transaction = {
-                    "date": now_str,
-                    "type": trans_type,
-                    "description": description,
-                    "amount": amount,
-                    "currency": from_account["currency"],
-                    "account": from_account_name
-                }
+                new_transaction = {"date": now_str, "type": trans_type, "description": description, "amount": amount, "currency": from_account["currency"], "account": from_account_name}
 
-                if trans_type == "收入":
-                    from_account["balance"] += amount
-                
+                if trans_type == "收入": from_account["balance"] += amount
                 elif trans_type == "支出":
+                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
                     from_account["balance"] -= amount
-
                 elif trans_type == "转账":
+                    if from_account["balance"] < amount: st.error("转出账户余额不足！"); st.stop()
                     if to_account_name:
                         to_account = next((acc for acc in cash_accounts if acc["name"] == to_account_name), None)
                         if to_account:
-                            if from_account['currency'] != to_account['currency']:
-                                st.error("跨币种转账暂不支持，请分步操作。"); st.stop()
+                            if from_account['currency'] != to_account['currency']: st.error("跨币种转账暂不支持，请分步操作。"); st.stop()
                             from_account["balance"] -= amount
                             to_account["balance"] += amount
                             new_transaction["details"] = f"从 {from_account_name} 转至 {to_account_name}"
                         else: st.error("转入账户未找到！"); st.stop()
                     else: st.error("请选择转入账户！"); st.stop()
-
-                elif "买入" in trans_type:
+                elif trans_type == "买入股票":
+                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
+                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
+                    profile = get_stock_profile(symbol)
+                    if not profile or not profile.get("currency"): st.error(f"无法获取股票 {symbol} 的信息，请检查代码是否正确。"); st.stop()
+                    stock_currency, cash_currency = profile["currency"], from_account["currency"]
+                    amount_in_usd = amount / exchange_rates.get(cash_currency, 1)
+                    cost_in_stock_currency = amount_in_usd * exchange_rates.get(stock_currency, 1)
+                    price_per_unit = cost_in_stock_currency / quantity
+                    from_account["balance"] -= amount
+                    holding = next((h for h in stock_holdings if h.get("ticker") == symbol), None)
+                    if holding:
+                        old_cost_basis, new_quantity = (holding.get('average_cost', 0) * holding.get('quantity', 0)), (holding.get('quantity', 0) + quantity)
+                        new_cost_basis = old_cost_basis + cost_in_stock_currency
+                        holding['quantity'], holding['average_cost'] = new_quantity, (new_cost_basis / new_quantity)
+                    else:
+                        stock_holdings.append({"ticker": symbol, "quantity": quantity, "average_cost": price_per_unit, "currency": stock_currency})
+                    new_transaction.update({"symbol": symbol, "quantity": quantity, "price": price_per_unit})
+                elif trans_type == "买入加密货币":
+                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
                     if quantity <= 0: st.error("数量必须大于0"); st.stop()
                     from_account["balance"] -= amount
                     price_per_unit = amount / quantity
-                    asset_list = stock_holdings if "股票" in trans_type else crypto_holdings
-                    symbol_key = "ticker" if "股票" in trans_type else "symbol"
-                    
-                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
+                    holding = next((h for h in crypto_holdings if h.get("symbol") == symbol), None)
                     if holding:
                         new_total_cost = (holding.get('average_cost',0) * holding.get('quantity',0)) + amount
-                        holding['quantity'] = holding.get('quantity',0) + quantity
+                        holding['quantity'] += quantity
                         holding['average_cost'] = new_total_cost / holding['quantity']
                     else:
-                        new_holding = {symbol_key: symbol, "quantity": quantity, "average_cost": price_per_unit}
-                        if "股票" in trans_type: new_holding["currency"] = from_account['currency']
-                        asset_list.append(new_holding)
+                        crypto_holdings.append({"symbol": symbol, "quantity": quantity, "average_cost": price_per_unit})
                     new_transaction.update({"symbol": symbol, "quantity": quantity, "price": price_per_unit})
-                
                 elif "卖出" in trans_type:
                     if quantity <= 0: st.error("数量必须大于0"); st.stop()
+                    asset_list, symbol_key = (stock_holdings, "ticker") if "股票" in trans_type else (crypto_holdings, "symbol")
+                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
+                    if not holding or holding.get('quantity', 0) < quantity: st.error(f"卖出失败：{symbol} 数量不足。"); st.stop()
+                    
                     from_account["balance"] += amount
                     price_per_unit = amount / quantity
-                    asset_list = stock_holdings if "股票" in trans_type else crypto_holdings
-                    symbol_key = "ticker" if "股票" in trans_type else "symbol"
-                    
-                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
-                    if not holding or holding.get('quantity', 0) < quantity:
-                        st.error(f"卖出失败：{symbol} 数量不足。"); st.stop()
-                    
                     realized_pl = (price_per_unit - holding.get('average_cost', 0)) * quantity
                     st.toast(f"实现盈亏: {realized_pl:,.2f} {from_account['currency']}")
                     holding['quantity'] -= quantity
-                    
-                    if holding['quantity'] < 1e-9: # If sold all, remove holding
-                        asset_list.remove(holding)
+                    if holding['quantity'] < 1e-9: asset_list.remove(holding)
                     new_transaction.update({"symbol": symbol, "quantity": quantity, "price": price_per_unit})
 
-                user_profile.setdefault("transactions", []).insert(0, new_transaction) # Add to transaction log
-                
-                if save_user_profile(st.session_state.user_email, user_profile): 
-                    st.success("流水记录成功！"); time.sleep(1); st.rerun()
+                user_profile.setdefault("transactions", []).insert(0, new_transaction)
+                if save_user_profile(st.session_state.user_email, user_profile): st.success("流水记录成功！"); time.sleep(1); st.rerun()
 
         st.subheader("📑 交易流水")
         transactions_df = pd.DataFrame(user_profile.get("transactions", []))
@@ -542,33 +582,24 @@ def display_dashboard():
                 f_col1, f_col2, f_col3 = st.columns(3)
                 start_date = f_col1.date_input("开始日期", value=None)
                 end_date = f_col2.date_input("结束日期", value=None)
-                
                 all_types = transactions_df['type'].unique()
                 selected_types = f_col3.multiselect("类型", options=all_types, default=list(all_types))
                 search_term = st.text_input("搜索描述")
-
-                # Ensure date column is datetime for comparison
                 transactions_df['date_dt'] = pd.to_datetime(transactions_df['date'])
-
                 if start_date: transactions_df = transactions_df[transactions_df['date_dt'].dt.date >= start_date]
                 if end_date: transactions_df = transactions_df[transactions_df['date_dt'].dt.date <= end_date]
                 if selected_types: transactions_df = transactions_df[transactions_df['type'].isin(selected_types)]
                 if search_term: transactions_df = transactions_df[transactions_df['description'].str.contains(search_term, case=False, na=False)]
-                
-                # Drop the temporary datetime column before displaying
                 transactions_df = transactions_df.drop(columns=['date_dt'])
-
         st.dataframe(transactions_df.sort_values(by="date", ascending=False) if not transactions_df.empty else pd.DataFrame(), use_container_width=True, hide_index=True)
 
-        with st.expander("⚙️ 编辑现有资产与负债 (危险操作，将自动生成流水)"):
-            original_portfolio = deepcopy(user_portfolio)
+        with st.expander("⚙️ 编辑现有资产与负债 (危险操作)"):
             edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
             
             def to_df_with_schema(data, schema):
                 df = pd.DataFrame(data)
                 for col, col_type in schema.items():
-                    if col not in df.columns:
-                        df[col] = pd.Series(dtype=col_type)
+                    if col not in df.columns: df[col] = pd.Series(dtype=col_type)
                 return df
 
             with edit_tabs[0]:
@@ -577,12 +608,12 @@ def display_dashboard():
                 edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)})
                 if st.button("💾 保存现金账户修改", key="save_cash"):
                     edited_list = edited_df.dropna(subset=['name']).to_dict('records')
-                    original_map = {acc['name']: acc for acc in original_portfolio["cash_accounts"]}
+                    original_map = {acc['name']: acc for acc in deepcopy(user_portfolio["cash_accounts"])}
                     for edited_acc in edited_list:
                         original_acc = original_map.get(edited_acc.get('name'))
                         if original_acc and abs(original_acc['balance'] - edited_acc['balance']) > 0.01:
                             delta = edited_acc['balance'] - original_acc['balance']
-                            user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "收入" if delta > 0 else "支出", "description": "手动调整现金账户余额", "amount": abs(delta), "currency": edited_acc["currency"], "account": edited_acc["name"]})
+                            user_profile.setdefault("transactions", []).insert(0, {"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "收入" if delta > 0 else "支出", "description": "手动调整现金账户余额", "amount": abs(delta), "currency": edited_acc["currency"], "account": edited_acc["name"]})
                     user_portfolio["cash_accounts"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
 
@@ -592,39 +623,61 @@ def display_dashboard():
                 edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)})
                 if st.button("💾 保存负债账户修改", key="save_liabilities"):
                     edited_list = edited_df.dropna(subset=['name']).to_dict('records')
-                    original_map = {liab['name']: liab for liab in original_portfolio["liabilities"]}
+                    original_map = {liab['name']: liab for liab in deepcopy(user_portfolio["liabilities"])}
                     for edited_liab in edited_list:
                         original_liab = original_map.get(edited_liab.get('name'))
                         if original_liab and abs(original_liab['balance'] - edited_liab['balance']) > 0.01:
                             delta = edited_liab['balance'] - original_liab['balance']
-                            user_profile.setdefault("transactions", []).append({"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "负债增加" if delta > 0 else "负债减少", "description": "手动调整负债余额", "amount": abs(delta), "currency": edited_liab["currency"], "account": edited_liab["name"]})
+                            user_profile.setdefault("transactions", []).insert(0, {"date": datetime.now().strftime("%Y-%m-%d %H:%M"), "type": "负债增加" if delta > 0 else "负债减少", "description": "手动调整负债余额", "amount": abs(delta), "currency": edited_liab["currency"], "account": edited_liab["name"]})
                     user_portfolio["liabilities"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新并自动记录流水！"); time.sleep(1); st.rerun()
             
             with edit_tabs[2]:
                 schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
                 df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-                edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.4f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f"), "currency": "货币"})
-                ## FIX: Implemented save logic for the stock editor.
+                existing_tickers = {s['ticker'] for s in user_portfolio.get("stocks", []) if s.get('ticker')}
+                stock_options = sorted(list(existing_tickers | POPULAR_STOCKS))
+
+                edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={
+                    "ticker": st.column_config.SelectboxColumn("代码", options=stock_options, required=True), 
+                    "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), 
+                    "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f", required=True), 
+                    "currency": st.column_config.TextColumn("货币", disabled=True)
+                })
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
-                    edited_list = edited_df.dropna(subset=['ticker']).to_dict('records')
+                    edited_list = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records')
+                    
+                    for holding in edited_list:
+                        if not holding.get('currency') or pd.isna(holding.get('currency')):
+                            with st.spinner(f"正在获取 {holding['ticker']} 的货币信息..."):
+                                profile = get_stock_profile(holding['ticker'])
+                            if profile and profile.get('currency'):
+                                holding['currency'] = profile['currency']
+                            else:
+                                st.error(f"无法获取 {holding['ticker']} 的货币信息，保存失败。"); st.stop()
+
                     user_portfolio["stocks"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile):
-                        st.success("股票持仓已更新！(注意: 未自动生成流水)")
+                        st.success("股票持仓已更新！")
                         time.sleep(1); st.rerun()
 
             with edit_tabs[3]:
                 schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
                 df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
-                edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": "代码", "quantity": st.column_config.NumberColumn("数量", format="%.8f"), "average_cost": st.column_config.NumberColumn("平均成本", format="%.2f")})
-                ## FIX: Implemented save logic for the crypto editor.
+                existing_symbols = {c['symbol'] for c in user_portfolio.get("crypto", []) if c.get('symbol')}
+                crypto_options = sorted(list(existing_symbols | POPULAR_CRYPTO))
+                
+                edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={
+                    "symbol": st.column_config.SelectboxColumn("代码", options=crypto_options, required=True), 
+                    "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), 
+                    "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)
+                })
                 if st.button("💾 保存加密货币修改", key="save_crypto"):
-                    edited_list = edited_df.dropna(subset=['symbol']).to_dict('records')
+                    edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
                     user_portfolio["crypto"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile):
-                        st.success("加密货币持仓已更新！(注意: 未自动生成流水)")
+                        st.success("加密货币持仓已更新！")
                         time.sleep(1); st.rerun()
-
 
     with tab3:
         st.subheader("📈 分析与洞察")
@@ -632,14 +685,12 @@ def display_dashboard():
         with sub_tab1:
             benchmark_ticker = st.text_input("添加市场基准对比 (例如 SPY, IVV)", "").upper()
             asset_history = get_asset_history(st.session_state.user_email, 365)
-            if not asset_history:
-                st.info("暂无历史数据，无法生成图表。")
+            if len(asset_history) < 2:
+                st.info("历史数据不足，无法生成图表。")
             else:
                 history_df = pd.DataFrame(asset_history)
-                if 'date' in history_df.columns:
-                    history_df['date'] = pd.to_datetime(history_df['date'])
-                    history_df = history_df.set_index('date')
-
+                history_df['date'] = pd.to_datetime(history_df['date'])
+                history_df = history_df.set_index('date')
                 history_df['net_worth_normalized'] = (history_df['net_worth_usd'] / history_df['net_worth_usd'].iloc[0]) * 100
                 chart_data = history_df[['net_worth_normalized']].rename(columns={'net_worth_normalized': '我的投资组合'})
 
@@ -675,21 +726,12 @@ def display_dashboard():
                 end_snapshot = asset_history[-1]; start_snapshot = asset_history[0]
                 total_change_usd = end_snapshot["net_worth_usd"] - start_snapshot["net_worth_usd"]
                 
-                ## FIX: Implemented a simplified but logical attribution model.
-                # This model calculates contributions based on the changes in aggregated asset classes.
-                market_change_usd, cash_flow_usd, fx_change_usd = 0.0, 0.0, 0.0
-
-                # 1. Change in Investment Value (Stocks + Crypto)
                 start_inv_usd = start_snapshot["total_stock_value_usd"] + start_snapshot["total_crypto_value_usd"]
                 end_inv_usd = end_snapshot["total_stock_value_usd"] + end_snapshot["total_crypto_value_usd"]
                 market_change_usd = end_inv_usd - start_inv_usd
-
-                # 2. Change in Net Cash (Cash - Liabilities)
                 start_net_cash_usd = start_snapshot["total_cash_balance_usd"] - start_snapshot["total_liabilities_usd"]
                 end_net_cash_usd = end_snapshot["total_cash_balance_usd"] - end_snapshot["total_liabilities_usd"]
                 cash_flow_usd = end_net_cash_usd - start_net_cash_usd
-
-                # 3. The residual is attributed to FX and other unaccounted factors.
                 fx_change_usd = total_change_usd - market_change_usd - cash_flow_usd
                 
                 st.metric(f"期间净资产变化 ({display_curr})", f"{display_symbol}{total_change_usd * display_rate:,.2f}")
@@ -709,7 +751,6 @@ def display_dashboard():
                     st.info(ai_summary)
 
 def run_migration():
-    st.info("正在检查数据结构版本...")
     # Placeholder for future data migration logic
     st.session_state.migration_done = True
     return
@@ -724,10 +765,11 @@ if st.session_state.logged_in:
         st.success(f"欢迎, {st.session_state.user_email}")
         if st.button("退出登录"):
             token_to_remove = st.query_params.get("session_token")
-            sessions = get_global_data("sessions")
-            if token_to_remove in sessions:
-                del sessions[token_to_remove]
-                save_global_data("sessions", sessions)
+            if token_to_remove:
+                sessions = get_global_data("sessions")
+                if token_to_remove in sessions:
+                    del sessions[token_to_remove]
+                    save_global_data("sessions", sessions)
             for key in list(st.session_state.keys()): del st.session_state[key]
             st.query_params.clear(); st.rerun()
     display_dashboard()
