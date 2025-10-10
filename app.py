@@ -113,7 +113,7 @@ def check_session_from_query_params():
         st.session_state.logged_in, st.session_state.user_email, st.session_state.login_step = True, session_info["email"], "logged_in"
     elif "session_token" in st.query_params: st.query_params.clear()
 
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600) # 缓存10分钟
 def get_market_data_yf(tickers_to_fetch, for_date=None):
     market_data = {}
     if not tickers_to_fetch: return market_data
@@ -122,16 +122,19 @@ def get_market_data_yf(tickers_to_fetch, for_date=None):
             start_date, end_date = for_date, for_date + timedelta(days=1)
             data = yf.download(tickers=tickers_to_fetch, start=start_date, end=end_date, progress=False, timeout=10)
             if data.empty: return {}
-            prices = data['Close'].iloc[0] if 'Close' in data else data.get(tickers_to_fetch[0], {}).get('Close', pd.Series())[0]
+            prices = data['Close'].iloc[0] if 'Close' in data.columns else data.iloc[0]
+            for ticker in tickers_to_fetch:
+                price = prices.get(ticker) if isinstance(prices, pd.Series) else prices[0] if not prices.empty else 0
+                market_data[ticker] = {"latest_price": price if pd.notna(price) else 0}
         else:
-            data = yf.download(tickers=tickers_to_fetch, period="2d", progress=False, timeout=10)
-            if data.empty: return {}
-            prices = data['Close'].iloc[-1]
-
-        for ticker in tickers_to_fetch:
-            price = prices.get(ticker) if isinstance(prices, pd.Series) else prices
-            market_data[ticker] = {"latest_price": price if pd.notna(price) else 0}
-    except Exception as e: st.warning(f"使用yfinance获取 {tickers_to_fetch} 市场价格时出错: {e}")
+            for ticker in tickers_to_fetch:
+                try:
+                    t_info = yf.Ticker(ticker).info
+                    price = t_info.get('regularMarketPrice') or t_info.get('currentPrice') or t_info.get('previousClose') or 0
+                    market_data[ticker] = {"latest_price": price}
+                except Exception:
+                    market_data[ticker] = {"latest_price": 0}
+    except Exception as e: st.warning(f"使用yfinance获取市场价格时出错: {e}")
     return market_data
 
 def get_prices_from_market_data(market_data, tickers):
@@ -145,7 +148,7 @@ def get_prices_from_market_data(market_data, tickers):
 def get_stock_profile_yf(symbol):
     try:
         ticker = yf.Ticker(symbol); info = ticker.info
-        if info and info.get('shortName'): return info # Use shortName as a proxy for a valid ticker info
+        if info and info.get('shortName'): return info
     except Exception: return None
     return None
 
@@ -432,7 +435,7 @@ def display_dashboard():
                                 with st.spinner(f"正在验证 {holding['ticker']}..."): profile = get_stock_profile_yf(holding['ticker'])
                                 if profile and profile.get('currency'):
                                     holding['currency'] = profile['currency'].upper()
-                                elif '.' not in holding['ticker']: # Fallback for US stocks/ETFs
+                                elif '.' not in holding['ticker']:
                                     with st.spinner(f"信息不完整, 尝试获取 {holding['ticker']} 价格..."):
                                         price_check = get_market_data_yf([holding['ticker']])
                                     if price_check and price_check.get(holding['ticker'], {}).get('latest_price', 0) > 0:
@@ -500,7 +503,7 @@ def display_dashboard():
         if analysis_mode == "历史快照":
             if start_snapshot and end_snapshot:
                 st.write(f"#### 分析周期: {start_snapshot['date']}  ➡️  {end_snapshot['date']}")
-                prompt = f"""你是一位专业的投资组合分析师... (历史对比模式Prompt)""" # Placeholder
+                prompt = f"""你是一位专业的投资组合分析师。请基于以下用户在两个时间点的匿名投资组合数据，进行详细的对比分析...""" # Placeholder
             else:
                 st.warning("历史快照数据不足，无法进行对比分析。"); show_button = False
         else:
