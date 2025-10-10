@@ -21,6 +21,7 @@ CURRENCY_SYMBOLS = {"USD": "$", "CNY": "¥", "EUR": "€", "HKD": "HK$", "JPY": 
 SESSION_EXPIRATION_DAYS = 7
 DATA_REFRESH_INTERVAL_SECONDS = 3600 # 1 hour
 BASE_ONEDRIVE_PATH = "root:/Apps/StreamlitDashboard"
+OUNCES_TO_GRAMS = 31.1035
 
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -95,7 +96,7 @@ def handle_verify_code(email, code):
     if not code_info or time.time() > code_info["expires_at"]: st.sidebar.error("验证码已过期或不存在。"); return
     if code_info["code"] == code:
         if not get_user_profile(email):
-            new_profile = {"role": "user", "portfolio": {"stocks": [], "cash_accounts": [], "crypto": [], "liabilities": []}, "transactions": []}
+            new_profile = {"role": "user", "portfolio": {"stocks": [], "cash_accounts": [], "crypto": [], "liabilities": [], "transactions": [], "gold": []}}
             save_user_profile(email, new_profile); st.toast("🎉 欢迎新用户！已为您创建账户。")
         sessions, token = get_global_data("sessions"), secrets.token_hex(16)
         sessions[token] = {"email": email, "expires_at": time.time() + (SESSION_EXPIRATION_DAYS * 24 * 60 * 60)}
@@ -189,11 +190,11 @@ def get_closest_snapshot(target_date, asset_history):
     if not relevant_snapshots: return None
     return max(relevant_snapshots, key=lambda x: x['date'])
 
-def update_asset_snapshot(email, user_profile, total_assets_usd, total_liabilities_usd, total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, current_rates):
+def update_asset_snapshot(email, user_profile, total_assets_usd, total_liabilities_usd, total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, current_rates):
     today_str = datetime.now().strftime("%Y-%m-%d")
     if not get_onedrive_data(f"{BASE_ONEDRIVE_PATH}/history/{get_email_hash(email)}/{today_str}.json"):
         st.toast("今日资产快照已生成！")
-        snapshot = {"date": today_str, "total_assets_usd": total_assets_usd, "total_liabilities_usd": total_liabilities_usd, "net_worth_usd": total_assets_usd - total_liabilities_usd, "total_stock_value_usd": total_stock_value_usd, "total_cash_balance_usd": total_cash_balance_usd, "total_crypto_value_usd": total_crypto_value_usd, "exchange_rates": current_rates, "portfolio": user_profile["portfolio"]}
+        snapshot = {"date": today_str, "total_assets_usd": total_assets_usd, "total_liabilities_usd": total_liabilities_usd, "net_worth_usd": total_assets_usd - total_liabilities_usd, "total_stock_value_usd": total_stock_value_usd, "total_cash_balance_usd": total_cash_balance_usd, "total_crypto_value_usd": total_crypto_value_usd, "total_gold_value_usd": total_gold_value_usd, "exchange_rates": current_rates, "portfolio": user_profile["portfolio"]}
         save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/history/{get_email_hash(email)}/{today_str}.json", snapshot)
 
 @st.cache_data(ttl=3600)
@@ -221,8 +222,8 @@ def display_login_form():
             if st.button("返回"): st.session_state.login_step = "enter_email"; st.rerun()
 
 def display_admin_panel(): st.sidebar.header("👑 管理员面板"); st.info("管理员功能待适配新数据结构。")
-def display_asset_allocation_chart(stock_usd, cash_usd, crypto_usd, display_curr, display_rate, display_symbol):
-    labels, values_usd = ['股票', '现金', '加密货币'], [stock_usd, cash_usd, crypto_usd]
+def display_asset_allocation_chart(stock_usd, cash_usd, crypto_usd, gold_usd, display_curr, display_rate, display_symbol):
+    labels, values_usd = ['股票', '现金', '加密货币', '黄金'], [stock_usd, cash_usd, crypto_usd, gold_usd]
     non_zero_labels, non_zero_values = [l for l, v in zip(labels, values_usd) if v > 0.01], [v for v in values_usd if v > 0.01]
     if not non_zero_values: st.info("暂无资产可供分析。"); return
     fig = go.Figure(data=[go.Pie(labels=non_zero_labels, values=[v * display_rate for v in non_zero_values], hole=.4, textinfo='percent+label', hovertemplate=f"<b>%{{label}}</b><br>价值: {display_symbol}%{{value:,.2f}} {display_curr}<br>占比: %{{percent}}<extra></extra>")])
@@ -240,23 +241,26 @@ def display_dashboard():
         if len(asset_history) < 1: st.warning("无任何历史数据，无法使用快照分析。"); st.stop()
         max_date, min_date = datetime.strptime(asset_history[-1]['date'], '%Y-%m-%d').date(), datetime.strptime(asset_history[0]['date'], '%Y-%m-%d').date()
         end_date = st.sidebar.date_input("结束日期", value=max_date, min_value=min_date, max_value=max_date)
-        start_date = st.sidebar.date_input("开始日期", value=end_date - timedelta(days=7), min_value=min_date, max_value=end_date)
+        default_start_date = end_date - timedelta(days=7)
+        if default_start_date < min_date: default_start_date = min_date
+        start_date = st.sidebar.date_input("开始日期", value=default_start_date, min_value=min_date, max_value=end_date)
         start_snapshot, end_snapshot = get_closest_snapshot(start_date, asset_history), get_closest_snapshot(end_date, asset_history)
         if not end_snapshot: st.error("未能找到所选日期范围内的有效数据快照。"); st.stop()
         st.title(f"🚀 资产分析 (快照: {end_snapshot['date']})")
         user_portfolio, exchange_rates = end_snapshot['portfolio'], end_snapshot['exchange_rates']
         stock_tickers, crypto_symbols = [s['ticker'] for s in user_portfolio.get("stocks", [])], [c['symbol'] for c in user_portfolio.get("crypto", [])]
         y_crypto_tickers = [f"{s.upper()}-USD" for s in crypto_symbols]
+        all_yf_tickers = stock_tickers + y_crypto_tickers + ["GC=F"]
         with st.spinner(f"正在获取 {end_snapshot['date']} 的历史价格..."):
-            market_data = get_market_data_yf(stock_tickers + y_crypto_tickers, for_date=datetime.strptime(end_snapshot['date'], '%Y-%m-%d'))
-        prices = get_prices_from_market_data(market_data, stock_tickers + crypto_symbols)
+            market_data = get_market_data_yf(all_yf_tickers, for_date=datetime.strptime(end_snapshot['date'], '%Y-%m-%d'))
+        prices = get_prices_from_market_data(market_data, stock_tickers + crypto_symbols + ["GC=F"])
 
     else: # 实时数据模式
         st.title(f"🚀 {st.session_state.user_email} 的专业仪表盘")
         user_profile = get_user_profile(st.session_state.user_email)
         if user_profile is None: st.error("无法加载用户数据。"); st.stop()
         user_portfolio = user_profile.setdefault("portfolio", {})
-        for key in ["stocks", "cash_accounts", "crypto", "liabilities", "transactions"]: user_portfolio.setdefault(key, [])
+        for key in ["stocks", "cash_accounts", "crypto", "liabilities", "transactions", "gold"]: user_portfolio.setdefault(key, [])
         stock_tickers, crypto_symbols = [s['ticker'] for s in user_portfolio.get("stocks", [])], [c['symbol'] for c in user_portfolio.get("crypto", [])]
         last_fetched_tickers, current_tickers = st.session_state.get('last_fetched_tickers', set()), set(stock_tickers + crypto_symbols)
         tickers_changed = current_tickers != last_fetched_tickers
@@ -265,27 +269,38 @@ def display_dashboard():
         if tickers_changed or (now - st.session_state.last_market_data_fetch > DATA_REFRESH_INTERVAL_SECONDS):
             with st.spinner("正在获取最新市场数据 (yfinance)..."):
                 y_crypto_tickers = [f"{s.upper()}-USD" for s in crypto_symbols]
-                st.session_state.market_data = get_market_data_yf(stock_tickers + y_crypto_tickers)
+                all_yf_tickers = stock_tickers + y_crypto_tickers + ["GC=F"]
+                st.session_state.market_data = get_market_data_yf(all_yf_tickers)
                 st.session_state.exchange_rates = get_exchange_rates()
                 st.session_state.last_market_data_fetch, st.session_state.last_fetched_tickers = now, current_tickers
                 st.rerun()
-        market_data, prices, exchange_rates = st.session_state.get('market_data', {}), get_prices_from_market_data(st.session_state.get('market_data', {}), stock_tickers + crypto_symbols), st.session_state.get('exchange_rates', {})
+        market_data, prices, exchange_rates = st.session_state.get('market_data', {}), get_prices_from_market_data(st.session_state.get('market_data', {}), stock_tickers + crypto_symbols + ["GC=F"]), st.session_state.get('exchange_rates', {})
         if not exchange_rates: st.error("无法加载汇率，资产总值不准确。"); st.stop()
 
-    all_holdings = user_portfolio.get("stocks", []) + user_portfolio.get("crypto", [])
-    failed_tickers = [h.get('ticker') or h.get('symbol') for h in all_holdings if prices.get(h.get('ticker') or h.get('symbol'), 0) == 0]
+    all_holdings = user_portfolio.get("stocks", []) + user_portfolio.get("crypto", []) + user_portfolio.get("gold", [])
+    failed_tickers = []
+    for h in all_holdings:
+        ticker = h.get('ticker') or h.get('symbol') or "黄金"
+        price_key = h.get('ticker') or h.get('symbol') or "GC=F"
+        if prices.get(price_key, 0) == 0:
+            failed_tickers.append(ticker)
     if failed_tickers:
         st.warning(f"警告：未能获取以下资产的价格，其市值可能显示为0: {', '.join(failed_tickers)}")
+    
+    gold_price_per_ounce = prices.get("GC=F", 0)
+    gold_price_per_gram = gold_price_per_ounce / OUNCES_TO_GRAMS if gold_price_per_ounce > 0 else 0
 
-    stock_holdings, cash_accounts, crypto_holdings, liabilities = user_portfolio.get("stocks", []), user_portfolio.get("cash_accounts", []), user_portfolio.get("crypto", []), user_portfolio.get("liabilities", [])
+    stock_holdings, cash_accounts, crypto_holdings, liabilities, gold_holdings = user_portfolio.get("stocks", []), user_portfolio.get("cash_accounts", []), user_portfolio.get("crypto", []), user_portfolio.get("liabilities", []), user_portfolio.get("gold", [])
     total_stock_value_usd = sum(s.get('quantity',0) * prices.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1) for s in stock_holdings)
     total_cash_balance_usd = sum(acc.get('balance',0) / exchange_rates.get(acc.get('currency', 'USD'), 1) for acc in cash_accounts)
     total_crypto_value_usd = sum(c.get('quantity',0) * prices.get(c['symbol'], 0) for c in crypto_holdings)
-    total_assets_usd, total_liabilities_usd = total_stock_value_usd + total_cash_balance_usd + total_crypto_value_usd, sum(liab.get('balance',0) / exchange_rates.get(liab.get('currency', 'USD'), 1) for liab in liabilities)
+    total_gold_value_usd = sum(g.get('grams', 0) * gold_price_per_gram for g in gold_holdings)
+    total_assets_usd = total_stock_value_usd + total_cash_balance_usd + total_crypto_value_usd + total_gold_value_usd
+    total_liabilities_usd = sum(liab.get('balance',0) / exchange_rates.get(liab.get('currency', 'USD'), 1) for liab in liabilities)
     net_worth_usd = total_assets_usd - total_liabilities_usd
     
     if analysis_mode == "实时数据" and user_profile is not None:
-        update_asset_snapshot(st.session_state.user_email, user_profile, total_assets_usd, total_liabilities_usd, total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, exchange_rates)
+        update_asset_snapshot(st.session_state.user_email, user_profile, total_assets_usd, total_liabilities_usd, total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, exchange_rates)
 
     display_curr = st.sidebar.selectbox("选择显示货币", options=SUPPORTED_CURRENCIES, key="display_currency")
     display_rate, display_symbol = exchange_rates.get(display_curr, 1), CURRENCY_SYMBOLS.get(display_curr, "")
@@ -302,17 +317,19 @@ def display_dashboard():
 
     stock_df_data = [{"代码": s['ticker'], "数量": s['quantity'], "货币": s['currency'], "成本价": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{s.get('average_cost', 0):,.2f}", "现价": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{prices.get(s['ticker'], 0):,.2f}", "市值": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{s.get('quantity', 0) * prices.get(s['ticker'], 0):,.2f}", "未实现盈亏": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{(s.get('quantity', 0) * prices.get(s['ticker'], 0)) - (s.get('quantity', 0) * s.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((s.get('quantity', 0) * prices.get(s['ticker'], 0)) - (s.get('quantity', 0) * s.get('average_cost', 0))) / (s.get('quantity', 0) * s.get('average_cost', 0)) * 100) if (s.get('quantity', 0) * s.get('average_cost', 0)) > 0 else 0:.2f}%"} for s in stock_holdings]
     crypto_df_data = [{"代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", "成本价": f"${c.get('average_cost', 0):,.2f}", "现价": f"${prices.get(c['symbol'], 0):,.2f}", "市值": f"${c.get('quantity', 0) * prices.get(c['symbol'], 0):,.2f}", "未实现盈亏": f"${(c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0))) / (c.get('quantity', 0) * c.get('average_cost', 0)) * 100) if (c.get('quantity', 0) * c.get('average_cost', 0)) > 0 else 0:.2f}%"} for c in crypto_holdings]
+    gold_df_data = [{"资产": "黄金", "克数 (g)": g.get('grams', 0), "成本价 ($/g)": f"${g.get('average_cost_per_gram', 0):,.2f}", "现价 ($/g)": f"${gold_price_per_gram:,.2f}", "市值": f"${g.get('grams', 0) * gold_price_per_gram:,.2f}", "未实现盈亏": f"${(g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0)):,.2f}", "回报率(%)": f"{(((g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0))) / (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) * 100) if (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) > 0 else 0:.2f}%"} for g in gold_holdings]
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 资产总览", "✍️ 交易管理", "⚙️ 编辑资产", "📈 历史趋势", "🔬 行业透视", "🤖 AI深度分析"])
 
     with tab1:
-        st.subheader("资产配置概览"); display_asset_allocation_chart(total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, display_curr, display_rate, display_symbol)
+        st.subheader("资产配置概览"); display_asset_allocation_chart(total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, display_curr, display_rate, display_symbol)
         st.subheader("资产与盈亏明细")
-        st.write("📈 **股票持仓**"); st.dataframe(pd.DataFrame(stock_df_data), use_container_width=True, hide_index=True)
+        st.write("📈 **股票持仓**"); st.table(pd.DataFrame(stock_df_data))
+        st.write("🥇 **黄金持仓**"); st.table(pd.DataFrame(gold_df_data))
         c1, c2, c3 = st.columns(3)
-        with c1: st.write("💵 **现金账户**"); st.dataframe(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]), use_container_width=True, hide_index=True)
-        with c2: st.write("🪙 **加密货币持仓**"); st.dataframe(pd.DataFrame(crypto_df_data), use_container_width=True, hide_index=True)
-        with c3: st.write("💳 **负债账户**"); st.dataframe(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]), use_container_width=True, hide_index=True)
+        with c1: st.write("💵 **现金账户**"); st.table(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]))
+        with c2: st.write("🪙 **加密货币持仓**"); st.table(pd.DataFrame(crypto_df_data))
+        with c3: st.write("💳 **负债账户**"); st.table(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]))
 
     with tab2:
         if analysis_mode == "历史快照":
@@ -389,16 +406,16 @@ def display_dashboard():
                 st.dataframe(pd.DataFrame(transactions).sort_values(by="date", ascending=False), use_container_width=True, hide_index=True)
             else:
                 st.dataframe(pd.DataFrame(), use_container_width=True, hide_index=True)
-
+    
     with tab3:
         st.subheader("⚙️ 编辑现有资产与负债")
         st.warning("危险操作：直接修改资产可能导致数据不一致。推荐使用“交易管理”页的流水功能进行记录。")
         if analysis_mode == "历史快照":
             st.info("在历史快照模式下，资产编辑功能被禁用。")
         else:
-            edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
+            edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币", "🥇 黄金"])
             def to_df_with_schema(data, schema):
-                df = pd.DataFrame(data)
+                df = pd.DataFrame(data);
                 for col, col_type in schema.items():
                     if col not in df.columns: df[col] = pd.Series(dtype=col_type)
                 return df
@@ -431,7 +448,7 @@ def display_dashboard():
             with edit_tabs[2]:
                 schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
                 df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-                edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码, 例如: AAPL, 0700.HK, 600519.SS", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", disabled=True)})
+                edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", disabled=True)})
                 if st.button("💾 保存股票持仓修改", key="save_stocks"):
                     edited_list, original_tickers, invalid_new_tickers = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records'), {s['ticker'] for s in deepcopy(user_portfolio.get("stocks", []))}, []
                     for holding in edited_list:
@@ -460,6 +477,16 @@ def display_dashboard():
                     for holding in edited_list: holding['symbol'] = holding['symbol'].upper()
                     user_portfolio["crypto"] = edited_list
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新！"); time.sleep(1); st.rerun()
+            with edit_tabs[4]:
+                st.info("记录您持有的实物或纸黄金。成本价请以美元/克计价。")
+                schema = {'grams': 'float64', 'average_cost_per_gram': 'float64'}
+                df = to_df_with_schema(user_portfolio.get("gold",[]), schema)
+                edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={
+                    "grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True),
+                    "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)})
+                if st.button("💾 保存黄金持仓修改", key="save_gold"):
+                    user_portfolio["gold"] = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
+                    if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新！"); time.sleep(1); st.rerun()
 
     with tab4:
         st.subheader("📈 历史趋势与基准")
@@ -508,12 +535,59 @@ def display_dashboard():
         if analysis_mode == "历史快照":
             if start_snapshot and end_snapshot:
                 st.write(f"#### 分析周期: {start_snapshot['date']}  ➡️  {end_snapshot['date']}")
-                prompt = f"""你是一位专业的投资组合分析师... (历史对比模式Prompt)""" # Placeholder
+                prompt = f"""(历史对比模式的详细Prompt在此处构建)""" # Placeholder
             else:
                 st.warning("历史快照数据不足，无法进行对比分析。"); show_button = False
         else:
             st.write("#### 分析当前实时持仓")
-            prompt = f"""你是一位专业的投资组合分析师。请基于以下用户的匿名实时投资组合数据，进行详细分析。分析要点: 1. 总结当前投资组合的整体情况。2. 分析其优点和缺点（如多元化、风险集中度）。3. 识别表现最好和最差的资产。4. 提供3-5条具体的优化建议。当前投资组合: - 总资产: {total_assets_usd:,.2f} USD, - 净资产: {net_worth_usd:,.2f} USD, 股票持仓:{pd.DataFrame(stock_df_data).to_markdown(index=False)}, 加密货币持仓:{pd.DataFrame(crypto_df_data).to_markdown(index=False)}, 现金账户:{pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{acc['balance']:,.2f}"} for acc in cash_accounts]).to_markdown(index=False)}, 负债:{pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{liab['balance']:,.2f}"} for liab in liabilities]).to_markdown(index=False)}. 请用中文进行分析。"""
+            prompt = f"""# 角色
+你是一位资深、专业的中文投资组合分析师。你的任务是为客户提供详细、专业且易于理解的投资组合诊断报告。
+
+# 输出要求
+- **语言**: 全程必须使用**简体中文**进行分析和回答。
+- **格式**: 使用Markdown格式，分点阐述，条理清晰。
+- **语气**: 专业、客观、鼓励，并提供可执行的建议。
+- **详细程度**: 对每个分析要点进行详细阐述，不要只给出结论，要解释原因。
+
+# 核心分析任务
+请根据下面提供的匿名投资组合数据，完成一份详细的诊断报告，报告需包含以下部分：
+1.  **总体概览**: 对当前资产规模、净资产、负债水平和资产构成进行简要总结。
+2.  **投资组合优点 (Strengths)**: 找出当前持仓中值得肯定的地方（例如，良好的多元化、持有了优质资产等）。
+3.  **潜在风险与弱点 (Weaknesses & Risks)**: 识别并详细说明当前投资组合存在的问题，例如：
+    * **集中度风险**: 是否有单一资产（股票或加密货币）或单一行业占比过高？
+    * **流动性分析**: 现金及高流动性资产的比例是否合理？
+    * **资产质量**: 持仓中是否有表现不佳或基本面存在问题的资产？
+4.  **具体优化建议**: 提供3-5条具体的、可立即执行的调整建议。例如：“建议考虑减持部分 [某股票]，因为它在您的投资组合中占比已超过XX%，风险过于集中。可以将资金再平衡到 [某行业/ETF] 以提高多元化。”
+
+---
+
+# 客户的匿名投资组合数据
+(所有金额单位均为 {display_curr})
+
+## 财务摘要
+- **总资产**: {display_symbol}{total_assets_usd * display_rate:,.2f}
+- **总负债**: {display_symbol}{total_liabilities_usd * display_rate:,.2f}
+- **净资产**: {display_symbol}{net_worth_usd * display_rate:,.2f}
+
+## 详细持仓
+
+### 股票持仓
+{pd.DataFrame(stock_df_data).to_markdown(index=False)}
+
+### 黄金持仓
+{pd.DataFrame(gold_df_data).to_markdown(index=False)}
+
+### 加密货币持仓
+{pd.DataFrame(crypto_df_data).to_markdown(index=False)}
+
+### 现金账户
+{pd.DataFrame([{"账户名称": acc['name'], "货币": acc['currency'], "余额": f"{acc['balance']:,.2f}"} for acc in cash_accounts]).to_markdown(index=False)}
+
+### 负债情况
+{pd.DataFrame([{"名称": liab['name'], "货币": liab['currency'], "金额": f"{liab['balance']:,.2f}"} for liab in liabilities]).to_markdown(index=False)}
+---
+请开始您的中文分析报告。
+"""
         if show_button and st.button("开始深度分析", key="run_detailed_analysis"):
             with st.spinner("AI 正在进行深度分析，请稍候..."):
                 ai_summary = get_detailed_ai_analysis(prompt)
