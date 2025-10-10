@@ -281,7 +281,8 @@ def display_dashboard():
     failed_tickers = []
     for h in all_holdings:
         ticker = h.get('ticker') or h.get('symbol') or "黄金"
-        price_key = h.get('ticker') or h.get('symbol') or "GC=F"
+        price_key = h.get('ticker') or h.get('symbol')
+        if ticker == "黄金": price_key = "GC=F"
         if prices.get(price_key, 0) == 0:
             failed_tickers.append(ticker)
     if failed_tickers:
@@ -403,10 +404,11 @@ def display_dashboard():
             st.subheader("📑 交易流水")
             transactions = user_profile.get("transactions", [])
             if transactions:
-                st.dataframe(pd.DataFrame(transactions).sort_values(by="date", ascending=False), use_container_width=True, hide_index=True)
+                transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
+                st.table(transactions_df)
             else:
-                st.dataframe(pd.DataFrame(), use_container_width=True, hide_index=True)
-    
+                st.write("暂无交易记录。")
+
     with tab3:
         st.subheader("⚙️ 编辑现有资产与负债")
         st.warning("危险操作：直接修改资产可能导致数据不一致。推荐使用“交易管理”页的流水功能进行记录。")
@@ -481,9 +483,7 @@ def display_dashboard():
                 st.info("记录您持有的实物或纸黄金。成本价请以美元/克计价。")
                 schema = {'grams': 'float64', 'average_cost_per_gram': 'float64'}
                 df = to_df_with_schema(user_portfolio.get("gold",[]), schema)
-                edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={
-                    "grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True),
-                    "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)})
+                edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)})
                 if st.button("💾 保存黄金持仓修改", key="save_gold"):
                     user_portfolio["gold"] = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
                     if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新！"); time.sleep(1); st.rerun()
@@ -591,7 +591,7 @@ def display_dashboard():
         if show_button and st.button("开始深度分析", key="run_detailed_analysis"):
             with st.spinner("AI 正在进行深度分析，请稍候..."):
                 ai_summary = get_detailed_ai_analysis(prompt)
-                st.markdown(ai_summary)
+                st.write(ai_summary)
 
 def run_migration(): st.session_state.migration_done = True
 if not st.session_state.migration_done: run_migration()
