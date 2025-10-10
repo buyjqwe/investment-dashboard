@@ -30,13 +30,11 @@ if 'display_currency' not in st.session_state: st.session_state.display_currency
 if 'last_market_data_fetch' not in st.session_state: st.session_state.last_market_data_fetch = 0
 if 'migration_done' not in st.session_state: st.session_state.migration_done = False
 
-
 # --- API 配置 ---
 MS_GRAPH_CONFIG = st.secrets["microsoft_graph"]
 ADMIN_EMAIL = MS_GRAPH_CONFIG["admin_email"]
 ONEDRIVE_SENDER_EMAIL = MS_GRAPH_CONFIG['sender_email']
 CF_CONFIG = st.secrets["cloudflare"]
-
 
 # --- 核心功能函数定义 ---
 def get_email_hash(email): return hashlib.sha256(email.encode('utf-8')).hexdigest()
@@ -125,7 +123,6 @@ def get_market_data_yf(tickers_to_fetch, for_date=None):
             data = yf.download(tickers=tickers_to_fetch, start=start_date, end=end_date, progress=False, timeout=10)
             if data.empty: return {}
             prices = data['Close'].iloc[0] if 'Close' in data else data.get(tickers_to_fetch[0], {}).get('Close', pd.Series())[0]
-
         else:
             data = yf.download(tickers=tickers_to_fetch, period="2d", progress=False, timeout=10)
             if data.empty: return {}
@@ -148,7 +145,7 @@ def get_prices_from_market_data(market_data, tickers):
 def get_stock_profile_yf(symbol):
     try:
         ticker = yf.Ticker(symbol); info = ticker.info
-        if info and info.get('currency'): return info
+        if info and info.get('shortName'): return info # Use shortName as a proxy for a valid ticker info
     except Exception: return None
     return None
 
@@ -273,7 +270,7 @@ def display_dashboard():
         if not exchange_rates: st.error("无法加载汇率，资产总值不准确。"); st.stop()
 
     all_holdings = user_portfolio.get("stocks", []) + user_portfolio.get("crypto", [])
-    failed_tickers = [h['ticker'] if 'ticker' in h else h['symbol'] for h in all_holdings if prices.get(h.get('ticker') or h.get('symbol'), 0) == 0]
+    failed_tickers = [h.get('ticker') or h.get('symbol') for h in all_holdings if prices.get(h.get('ticker') or h.get('symbol'), 0) == 0]
     if failed_tickers:
         st.warning(f"警告：未能获取以下资产的价格，其市值可能显示为0: {', '.join(failed_tickers)}")
 
@@ -389,7 +386,7 @@ def display_dashboard():
                 st.dataframe(pd.DataFrame(transactions).sort_values(by="date", ascending=False), use_container_width=True, hide_index=True)
             else:
                 st.dataframe(pd.DataFrame(), use_container_width=True, hide_index=True)
-
+            
             with st.expander("⚙️ 编辑现有资产与负债 (危险操作)"):
                 edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币"])
                 def to_df_with_schema(data, schema):
@@ -433,7 +430,15 @@ def display_dashboard():
                             holding['ticker'] = holding['ticker'].upper()
                             if (holding['ticker'] not in original_tickers) or (not holding.get('currency') or pd.isna(holding.get('currency'))):
                                 with st.spinner(f"正在验证 {holding['ticker']}..."): profile = get_stock_profile_yf(holding['ticker'])
-                                if profile and profile.get('currency'): holding['currency'] = profile['currency'].upper()
+                                if profile and profile.get('currency'):
+                                    holding['currency'] = profile['currency'].upper()
+                                elif '.' not in holding['ticker']: # Fallback for US stocks/ETFs
+                                    with st.spinner(f"信息不完整, 尝试获取 {holding['ticker']} 价格..."):
+                                        price_check = get_market_data_yf([holding['ticker']])
+                                    if price_check and price_check.get(holding['ticker'], {}).get('latest_price', 0) > 0:
+                                        st.warning(f"未能获取 {holding['ticker']} 的完整货币信息, 已默认设为 USD。")
+                                        holding['currency'] = 'USD'
+                                    else: invalid_new_tickers.append(holding['ticker'])
                                 else: invalid_new_tickers.append(holding['ticker'])
                         if invalid_new_tickers: st.error(f"以下新增的代码无效或无法获取信息: {', '.join(invalid_new_tickers)}"); st.stop()
                         user_portfolio["stocks"] = edited_list
