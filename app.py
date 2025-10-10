@@ -212,14 +212,18 @@ def check_session_from_query_params():
         st.query_params.clear()
 
 def get_all_market_data(stock_tickers, crypto_symbols):
+    """
+    Fetches market data for stocks and crypto.
+    Includes robust error handling to show warnings on API failures.
+    """
     market_data = {}; api_key = st.secrets["financialmodelingprep"]["api_key"]
     if stock_tickers:
         try:
-            q_response = requests.get(f"https://financialmodelingprep.com/api/v3/quote/{','.join(stock_tickers)}?apikey={api_key}")
+            q_response = requests.get(f"https://financialmodelingprep.com/api/v3/quote/{','.join(stock_tickers)}?apikey={api_key}", timeout=10)
             q_response.raise_for_status(); q_data = q_response.json()
             price_map = {item['symbol']: item['price'] for item in q_data}
             
-            p_response = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{','.join(stock_tickers)}?apikey={api_key}")
+            p_response = requests.get(f"https://financialmodelingprep.com/api/v3/profile/{','.join(stock_tickers)}?apikey={api_key}", timeout=10)
             p_response.raise_for_status(); p_data = p_response.json()
             profile_map = {item['symbol']: {'sector': item.get('sector'), 'country': item.get('country')} for item in p_data}
 
@@ -229,16 +233,22 @@ def get_all_market_data(stock_tickers, crypto_symbols):
                     "sector": profile_map.get(ticker, {}).get('sector', 'N/A'),
                     "country": profile_map.get(ticker, {}).get('country', 'N/A')
                 } if ticker in price_map else None
-        except Exception: pass
+        except Exception as e:
+            # FIX: Replaced 'pass' with an explicit warning to the user.
+            st.warning(f"获取股票市场数据时出错: {e}")
+            
     if crypto_symbols:
         try:
             crypto_ticker_string = ",".join([f"{s}USD" for s in crypto_symbols])
-            response = requests.get(f"https://financialmodelingprep.com/api/v3/quote/{crypto_ticker_string}?apikey={api_key}")
+            response = requests.get(f"https://financialmodelingprep.com/api/v3/quote/{crypto_ticker_string}?apikey={api_key}", timeout=10)
             response.raise_for_status(); data = response.json()
             price_map = {item['symbol'].replace('USD', ''): item['price'] for item in data}
             for symbol in crypto_symbols:
                 market_data[symbol] = {"latest_price": price_map[symbol]} if symbol in price_map else None
-        except Exception: pass
+        except Exception as e:
+            # FIX: Replaced 'pass' with an explicit warning to the user.
+            st.warning(f"获取加密货币市场数据时出错: {e}")
+            
     return market_data
 
 def get_prices_from_cache(market_data):
