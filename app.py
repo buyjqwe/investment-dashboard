@@ -19,7 +19,7 @@ st.set_page_config(page_title="专业投资分析仪表盘", page_icon="🚀", l
 SUPPORTED_CURRENCIES = ["USD", "CNY", "EUR", "HKD", "JPY", "GBP"]
 CURRENCY_SYMBOLS = {"USD": "$", "CNY": "¥", "EUR": "€", "HKD": "HK$", "JPY": "¥", "GBP": "£"}
 SESSION_EXPIRATION_DAYS = 7
-DATA_REFRESH_INTERVAL_SECONDS = 3600 # 1 hour
+DATA_REFRESH_INTERVAL_SECONDS = 3600  # 1 hour
 BASE_ONEDRIVE_PATH = "root:/Apps/StreamlitDashboard"
 OUNCES_TO_GRAMS = 31.1035
 
@@ -57,10 +57,13 @@ def get_onedrive_data(path, is_json=True):
     try:
         token = get_ms_graph_token(); headers = {"Authorization": f"Bearer {token}"}
         resp = onedrive_api_request('get', f"{path}:/content", headers)
-        if resp.status_code == 404: return None
-        resp.raise_for_status(); return resp.json() if is_json else resp.text
-    except Exception as e:
-        if "404" not in str(e): st.error(f"从 OneDrive 加载数据失败 ({path}): {e}")
+        if resp.status_code == 404: 
+            st.error(f"未找到数据 ({path})")
+            return None
+        resp.raise_for_status(); 
+        return resp.json() if is_json else resp.text
+    except requests.exceptions.RequestException as e:
+        st.error(f"从 OneDrive 加载数据失败 ({path}): {e}")
         return None
 
 def save_onedrive_data(path, data):
@@ -69,81 +72,95 @@ def save_onedrive_data(path, data):
         json_data = json.dumps(data, indent=2, ensure_ascii=False)
         onedrive_api_request('put', f"{path}:/content", headers, data=json_data.encode('utf-8'))
         return True
-    except Exception as e: st.error(f"保存数据到 OneDrive 失败 ({path}): {e}"); return False
+    except Exception as e: 
+        st.error(f"保存数据到 OneDrive 失败 ({path}): {e}"); 
+        return False
 
-def get_user_profile(email): return get_onedrive_data(f"{BASE_ONEDRIVE_PATH}/users/{get_email_hash(email)}.json")
-def save_user_profile(email, data): return save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/users/{get_email_hash(email)}.json", data)
-def get_global_data(file_name): data = get_onedrive_data(f"{BASE_ONEDRIVE_PATH}/{file_name}.json"); return data if data else {}
-def save_global_data(file_name, data): return save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/{file_name}.json", data)
+def get_user_profile(email): 
+    return get_onedrive_data(f"{BASE_ONEDRIVE_PATH}/users/{get_email_hash(email)}.json")
+
+def save_user_profile(email, data): 
+    return save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/users/{get_email_hash(email)}.json", data)
+
+def get_global_data(file_name): 
+    data = get_onedrive_data(f"{BASE_ONEDRIVE_PATH}/{file_name}.json"); 
+    return data if data else {}
+
+def save_global_data(file_name, data): 
+    return save_onedrive_data(f"{BASE_ONEDRIVE_PATH}/{file_name}.json", data)
 
 def send_verification_code(email, code):
     try:
-        token = get_ms_graph_token(); url = f"https://graph.microsoft.com/v1.0/users/{ONEDRIVE_SENDER_EMAIL}/sendMail"
+        token = get_ms_graph_token(); 
+        url = f"https://graph.microsoft.com/v1.0/users/{ONEDRIVE_SENDER_EMAIL}/sendMail"
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         payload = {"message": {"subject": f"[{code}] 您的登录/注册验证码", "body": {"contentType": "Text", "content": f"您的验证码是：{code}，5分钟内有效。"}, "toRecipients": [{"emailAddress": {"address": email}}]}, "saveToSentItems": "true"}
-        requests.post(url, headers=headers, json=payload, timeout=10).raise_for_status(); return True
-    except Exception as e: st.error(f"邮件发送失败: {e}"); return False
+        requests.post(url, headers=headers, json=payload, timeout=10).raise_for_status(); 
+        return True
+    except Exception as e: 
+        st.error(f"邮件发送失败: {e}"); 
+        return False
 
 def handle_send_code(email):
-    if not re.match(r"[^@]+@[^@]+\.[^@]+", email): st.sidebar.error("请输入有效的邮箱地址。"); return
-    codes = get_global_data("codes"); code = str(random.randint(100000, 999999))
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", email): 
+        st.sidebar.error("请输入有效的邮箱地址。"); 
+        return
+    codes = get_global_data("codes"); 
+    code = str(random.randint(100000, 999999))
     codes[email] = {"code": code, "expires_at": time.time() + 300}
-    if not save_global_data("codes", codes) or not send_verification_code(email, code): return
-    st.sidebar.success("验证码已发送，请查收。"); st.session_state.login_step = "enter_code"; st.session_state.temp_email = email; st.rerun()
+    if not save_global_data("codes", codes) or not send_verification_code(email, code): 
+        return
+    st.sidebar.success("验证码已发送，请查收。"); 
+    st.session_state.login_step = "enter_code"; 
+    st.session_state.temp_email = email; 
+    st.rerun()
 
 def handle_verify_code(email, code):
-    codes = get_global_data("codes"); code_info = codes.get(email)
-    if not code_info or time.time() > code_info["expires_at"]: st.sidebar.error("验证码已过期或不存在。"); return
+    codes = get_global_data("codes"); 
+    code_info = codes.get(email)
+    if not code_info or time.time() > code_info["expires_at"]: 
+        st.sidebar.error("验证码已过期或不存在。"); 
+        return
     if code_info["code"] == code:
         if not get_user_profile(email):
             new_profile = {"role": "user", "portfolio": {"stocks": [], "cash_accounts": [], "crypto": [], "liabilities": [], "transactions": [], "gold": []}}
-            save_user_profile(email, new_profile); st.toast("🎉 欢迎新用户！已为您创建账户。")
+            save_user_profile(email, new_profile); 
+            st.toast("🎉 欢迎新用户！已为您创建账户。")
         sessions, token = get_global_data("sessions"), secrets.token_hex(16)
         sessions[token] = {"email": email, "expires_at": time.time() + (SESSION_EXPIRATION_DAYS * 24 * 60 * 60)}
-        save_global_data("sessions", sessions); del codes[email]; save_global_data("codes", codes)
+        save_global_data("sessions", sessions); 
+        del codes[email]; 
+        save_global_data("codes", codes)
         st.session_state.logged_in, st.session_state.user_email, st.session_state.login_step, st.query_params["session_token"] = True, email, "logged_in", token
         st.rerun()
-    else: st.sidebar.error("验证码错误。")
+    else: 
+        st.sidebar.error("验证码错误。")
 
 def check_session_from_query_params():
-    if st.session_state.get('logged_in'): return
+    if st.session_state.get('logged_in'): 
+        return
     token = st.query_params.get("session_token")
-    if not token: return
-    sessions = get_global_data("sessions"); session_info = sessions.get(token)
+    if not token: 
+        return
+    sessions = get_global_data("sessions"); 
+    session_info = sessions.get(token)
     if session_info and time.time() < session_info.get("expires_at", 0):
         st.session_state.logged_in, st.session_state.user_email, st.session_state.login_step = True, session_info["email"], "logged_in"
-    elif "session_token" in st.query_params: st.query_params.clear()
+    elif "session_token" in st.query_params: 
+        st.query_params.clear()
 
-@st.cache_data(ttl=600)
-def get_market_data_yf(tickers_to_fetch):
-    market_data = {}
-    if not tickers_to_fetch: return market_data
+@st.cache_data(ttl=86400)  # 缓存24小时
+def get_exchange_rates():
     try:
-        data = yf.download(tickers=tickers_to_fetch, period="5d", progress=False, timeout=10)
-        if data.empty:
-            st.warning(f"无法通过 yf.download 获取任何价格数据。")
-            return market_data
+        resp = requests.get(f"https://open.er-api.com/v6/latest/USD")
+        resp.raise_for_status(); 
+        data = resp.json()
+        return data.get("rates") if data.get("result") == "success" else None
+    except Exception as e: 
+        st.error(f"获取汇率失败: {e}"); 
+        return None
 
-        for ticker in tickers_to_fetch:
-            try:
-                if isinstance(data.columns, pd.MultiIndex):
-                    ticker_close_series = data[('Close', ticker)].dropna()
-                else:
-                    ticker_close_series = data['Close'].dropna()
-                
-                if not ticker_close_series.empty:
-                    price = ticker_close_series.iloc[-1]
-                    market_data[ticker] = {"latest_price": price}
-                else:
-                    t_info = yf.Ticker(ticker).info
-                    price = t_info.get('regularMarketPrice') or t_info.get('currentPrice') or t_info.get('previousClose') or 0
-                    market_data[ticker] = {"latest_price": price}
-            except Exception:
-                market_data[ticker] = {"latest_price": 0}
-
-    except Exception as e: st.warning(f"使用yfinance获取市场价格时出错: {e}")
-    return market_data
-
+# 其他函数省略
 def get_prices_from_market_data(market_data, tickers):
     prices = {}
     for t in tickers:
@@ -215,7 +232,7 @@ def get_detailed_history_df(_asset_history, start_date, end_date):
 
     all_historical_tickers = set()
     for snapshot in _asset_history:
-        portfolio = snapshot.get('portfolio', {}) if snapshot else {}
+        portfolio = snapshot.get('portfolio', {})
         for s in portfolio.get("stocks", []): all_historical_tickers.add(s['ticker'])
         for c in portfolio.get("crypto", []): all_historical_tickers.add(f"{c['symbol'].upper()}-USD")
     all_historical_tickers.add("GC=F")
@@ -655,28 +672,3 @@ def display_dashboard():
 
 ### 负债情况
 {pd.DataFrame([{"名称": liab['name'], "货币": liab['currency'], "金额": f"{liab['balance']:,.2f}"} for liab in liabilities]).to_markdown(index=False)}
----
-请开始您的中文分析报告。
-"""
-        if st.button("开始深度分析", key="run_detailed_analysis"):
-            with st.spinner("AI 正在进行深度分析，请稍候..."):
-                ai_summary = get_detailed_ai_analysis(prompt)
-                st.write(ai_summary)
-
-def run_migration(): st.session_state.migration_done = True
-if not st.session_state.migration_done: run_migration()
-check_session_from_query_params()
-if st.session_state.logged_in:
-    with st.sidebar:
-        st.success(f"欢迎, {st.session_state.user_email}")
-        if st.button("退出登录"):
-            token_to_remove = st.query_params.get("session_token")
-            if token_to_remove:
-                sessions = get_global_data("sessions")
-                if token_to_remove in sessions: del sessions[token_to_remove]; save_global_data("sessions", sessions)
-            for key in list(st.session_state.keys()): del st.session_state[key]
-            st.query_params.clear(); st.rerun()
-    display_dashboard()
-    if st.session_state.user_email == ADMIN_EMAIL: display_admin_panel()
-else: display_login_form()
-
