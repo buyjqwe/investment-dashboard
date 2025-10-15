@@ -607,26 +607,17 @@ def display_dashboard():
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-    with tab5:
-        st.subheader("🔬 行业板块分布")
-        sector_values = {}
-        with st.spinner("正在获取持仓股票的行业信息..."):
-            for s in stock_holdings:
-                profile = get_stock_profile_yf(s['ticker'])
-                sector = profile.get('sector', 'N/A') if profile else 'N/A'
-                value_usd = s.get('quantity',0) * prices.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1)
-                sector_values[sector] = sector_values.get(sector, 0) + value_usd
-        if not sector_values or all(s == 'N/A' for s in sector_values.keys()):
-            st.info("未能获取到股票的行业分类信息，或您尚未持有任何股票。")
-        else:
-            sector_df = pd.DataFrame(list(sector_values.items()), columns=['sector', 'value_usd']).sort_values(by='value_usd', ascending=False)
-            fig = go.Figure(data=[go.Pie(labels=sector_df['sector'], values=sector_df['value_usd'] * display_rate, hole=.4, textinfo='percent+label', hovertemplate=f"<b>%{{label}}</b><br>市值: {display_symbol}%{{value:,.2f}}<br>占比: %{{percent}}<extra></extra>")])
-            fig.update_layout(title_text='股票持仓行业分布', showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-
-    with tab6:
+with tab6:
         st.subheader("🤖 AI 深度分析")
         st.info("此功能会将您匿名的持仓明细发送给AI进行全面分析，以提供更具洞察力的建议。")
+
+        # --- Best Practice: Prepare complex parts of the string beforehand ---
+        stock_table = pd.DataFrame(stock_df_data).to_markdown(index=False)
+        gold_table = pd.DataFrame(gold_df_data).to_markdown(index=False)
+        crypto_table = pd.DataFrame(crypto_df_data).to_markdown(index=False)
+        cash_table = pd.DataFrame([{"账户名称": acc['name'], "货币": acc['currency'], "余额": f"{acc['balance']:,.2f}"} for acc in cash_accounts]).to_markdown(index=False)
+        liabilities_table = pd.DataFrame([{"名称": liab['name'], "货币": liab['currency'], "金额": f"{liab['balance']:,.2f}"} for liab in liabilities]).to_markdown(index=False)
+
         prompt = f"""# 角色
 你是一位资深、专业的中文投资组合分析师。你的任务是为客户提供详细、专业且易于理解的投资组合诊断报告。
 
@@ -659,16 +650,22 @@ def display_dashboard():
 ## 详细持仓
 
 ### 股票持仓
-{pd.DataFrame(stock_df_data).to_markdown(index=False)}
+{stock_table}
 
 ### 黄金持仓
-{pd.DataFrame(gold_df_data).to_markdown(index=False)}
+{gold_table}
 
 ### 加密货币持仓
-{pd.DataFrame(crypto_df_data).to_markdown(index=False)}
+{crypto_table}
 
 ### 现金账户
-{pd.DataFrame([{"账户名称": acc['name'], "货币": acc['currency'], "余额": f"{acc['balance']:,.2f}"} for acc in cash_accounts]).to_markdown(index=False)}
+{cash_table}
 
 ### 负债情况
-{pd.DataFrame([{"名称": liab['name'], "货币": liab['currency'], "金额": f"{liab['balance']:,.2f}"} for liab in liabilities]).to_markdown(index=False)}
+{liabilities_table}
+""" # <-- This was the missing part
+
+        if st.button("开始 AI 分析"):
+            with st.spinner("正在调用 AI 进行深度分析，请稍候..."):
+                analysis_result = get_detailed_ai_analysis(prompt)
+                st.markdown(analysis_result)
