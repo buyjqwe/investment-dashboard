@@ -299,10 +299,17 @@ def get_detailed_ai_analysis(prompt):
         return f"无法连接到 AI 服务进行分析: {e}"
 
 @st.cache_data(ttl=1800)
-def get_detailed_history_df(_asset_history, start_date, end_date):
-    if not _asset_history:
+def get_detailed_history_df(_asset_history_tuples, start_date, end_date):
+    """
+    Calculates detailed historical asset values.
+    Accepts a tuple of tuples for caching and converts it back to a list of dicts.
+    """
+    if not _asset_history_tuples:
         return pd.DataFrame()
 
+    # --- FIX: Convert the hashable tuple back to a list of dicts ---
+    _asset_history = [dict(s) for s in _asset_history_tuples]
+    
     all_historical_tickers = set()
     for snapshot in _asset_history:
         portfolio = snapshot.get('portfolio', {})
@@ -318,6 +325,7 @@ def get_detailed_history_df(_asset_history, start_date, end_date):
     all_dates = pd.date_range(start=start_date, end=end_date, freq='D')
 
     for date in all_dates:
+        # get_closest_snapshot now receives the corrected list of dicts
         snapshot = get_closest_snapshot(date.date(), _asset_history)
         if not snapshot: continue
 
@@ -474,7 +482,9 @@ def display_dashboard():
     if default_start_date < min_date: default_start_date = min_date
     start_date = st.sidebar.date_input("开始日期", value=default_start_date, min_value=min_date, max_value=max_date)
 
-    history_df = get_detailed_history_df(tuple(map(tuple, (s.items() for s in asset_history))), start_date, max_date - timedelta(days=1))
+    # Convert asset_history to a hashable type for caching
+    asset_history_tuples = tuple(map(tuple, (s.items() for s in asset_history)))
+    history_df = get_detailed_history_df(asset_history_tuples, start_date, max_date - timedelta(days=1))
     
     # Append today's data to the history for a complete chart
     if not history_df.empty:
@@ -490,7 +500,7 @@ def display_dashboard():
 
     st.header("财务状况核心指标")
     delta_value, delta_str = None, ""
-    if not history_df.empty:
+    if not history_df.empty and len(history_df.index) > 1:
         try:
             start_net_worth_usd = history_df.iloc[0]['net_worth_usd']
             delta_value = net_worth_usd - start_net_worth_usd
@@ -708,8 +718,8 @@ def display_dashboard():
 
     with tab4:
         st.subheader("📈 资产历史趋势")
-        if history_df.empty:
-            st.info("历史数据不足（少于1天），无法生成图表。")
+        if history_df.empty or len(history_df.index) < 2:
+            st.info("历史数据不足（少于2天），无法生成图表。")
         else:
             with st.spinner("正在生成历史趋势图..."):
                 fig = go.Figure()
@@ -816,7 +826,7 @@ def display_dashboard():
 # --- Main App Logic ---
 check_session_from_query_params()
 
-if not st.session_state.logged_in:
+if not st.session_state.get('logged_in', False):
     display_login_form()
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
