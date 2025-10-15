@@ -40,11 +40,43 @@ CF_CONFIG = st.secrets["cloudflare"]
 # --- 核心功能函数定义 ---
 def get_email_hash(email): return hashlib.sha256(email.encode('utf-8')).hexdigest()
 
-@st.cache_data(ttl=3500)
-def get_ms_graph_token():
-    url = f"https://login.microsoftonline.com/{MS_GRAPH_CONFIG['tenant_id']}/oauth2/v2.0/token"
-    data = {"grant_type": "client_credentials", "client_id": MS_GRAPH_CONFIG['client_id'], "client_secret": MS_GRAPH_CONFIG['client_secret'], "scope": "https://graph.microsoft.com/.default"}
-    resp = requests.post(url, data=data); resp.raise_for_status(); return resp.json()["access_token"]
+@st.cache_data(ttl=300) # Cache for 5 minutes
+def get_market_data_yf(symbols):
+    """
+    Fetches the latest market data for a list of symbols using yfinance.
+    """
+    if not symbols:
+        return {}
+    
+    data = {}
+    try:
+        # Use yf.Tickers for efficient batch requests
+        tickers = yf.Tickers(symbols)
+        
+        # yfinance returns different structures for single vs multiple tickers
+        if len(symbols) == 1:
+            # Handle the single ticker case
+            ticker_info = tickers.tickers[symbols[0]].info
+            if ticker_info and ticker_info.get('regularMarketPrice') is not None:
+                data[symbols[0]] = {
+                    "latest_price": ticker_info.get('regularMarketPrice'),
+                    "previous_close": ticker_info.get('previousClose')
+                }
+        else:
+            # Handle the multiple tickers case
+            for symbol, ticker_obj in tickers.tickers.items():
+                # .info can be slow; use history for price data for speed
+                hist = ticker_obj.history(period="2d")
+                if not hist.empty:
+                    data[symbol] = {
+                        "latest_price": hist['Close'].iloc[-1],
+                        "previous_close": hist['Close'].iloc[-2] if len(hist) > 1 else hist['Close'].iloc[-1]
+                    }
+
+    except Exception as e:
+        st.error(f"yfinance data fetch failed: {e}")
+    
+    return data
 
 def onedrive_api_request(method, path, headers, data=None):
     base_url = f"https://graph.microsoft.com/v1.0/users/{ONEDRIVE_SENDER_EMAIL}/drive"
