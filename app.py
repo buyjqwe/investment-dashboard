@@ -181,9 +181,9 @@ def get_stock_profile_yf(symbol):
 def get_historical_data_yf(symbol, days=365):
     try:
         ticker = yf.Ticker(symbol); hist = ticker.history(period=f"{days}d")
-        if not hist.empty: return hist['Close']
-    except Exception: return pd.Series()
-    return pd.Series()
+        if not hist.empty: return hist # Return the full dataframe
+    except Exception: return pd.DataFrame() # Return empty dataframe on error
+    return pd.DataFrame()
 
 def get_exchange_rates():
     try:
@@ -519,7 +519,7 @@ def display_dashboard():
             st.info("历史数据不足（少于2天），无法生成图表。请在明天再次使用本应用以开始追踪历史趋势。")
         else:
             with st.spinner("正在生成详细历史市值图表，这可能需要一些时间..."):
-                # --- 新增的详细历史生成逻辑 ---
+                # ---  Detailed history generation logic ---
                 start_hist_date = datetime.strptime(asset_history[0]['date'], '%Y-%m-%d').date()
                 end_hist_date = datetime.strptime(asset_history[-1]['date'], '%Y-%m-%d').date()
                 
@@ -531,7 +531,7 @@ def display_dashboard():
                     for c in portfolio.get("crypto", []): all_historical_tickers.add(f"{c['symbol'].upper()}-USD")
                 all_historical_tickers.add("GC=F")
                 
-                # 2. 一次性批量下载所有需要的历史价格数据
+                # 2. 一次性批量下载所有需要的历史价格数据 (Open and Close)
                 hist_prices_df = yf.download(list(all_historical_tickers), start=start_hist_date, end=end_hist_date + timedelta(days=1), progress=False)
                 
                 daily_net_worth_data = []
@@ -546,37 +546,55 @@ def display_dashboard():
                     exchange_rates = snapshot.get('exchange_rates', {})
 
                     # 4. 从已下载的数据中获取当天的价格 (处理非交易日)
+                    open_prices_series = None
+                    close_prices_series = None
                     try:
                         # 尝试直接定位日期
-                        day_prices_series = hist_prices_df.loc[date.strftime('%Y-%m-%d')]['Close']
+                        day_prices = hist_prices_df.loc[date.strftime('%Y-%m-%d')]
+                        open_prices_series = day_prices['Open']
+                        close_prices_series = day_prices['Close']
                     except KeyError:
                         # 如果当天不是交易日, 使用之前的最后一个交易日数据 (前向填充)
                         temp_df = hist_prices_df[hist_prices_df.index < date]
                         if not temp_df.empty:
-                            day_prices_series = temp_df.iloc[-1]['Close']
+                            last_day_prices = temp_df.iloc[-1]
+                            # 对于非交易日，开盘和收盘都视为与前一收盘价相同
+                            open_prices_series = last_day_prices['Close']
+                            close_prices_series = last_day_prices['Close']
                         else:
                             continue # 在此日期之前没有任何价格数据
 
-                    # 5. 基于当天的价格和快照的持仓，计算当日净资产
-                    stock_holdings = portfolio.get("stocks", [])
-                    crypto_holdings = portfolio.get("crypto", [])
-                    gold_holdings = portfolio.get("gold", [])
-                    cash_accounts = portfolio.get("cash_accounts", [])
-                    liabilities = portfolio.get("liabilities", [])
+                    # 辅助函数，用于根据给定的价格序列计算净资产
+                    def calculate_net_worth(prices_series):
+                        if prices_series is None: return 0
+                        
+                        stock_holdings = portfolio.get("stocks", [])
+                        crypto_holdings = portfolio.get("crypto", [])
+                        gold_holdings = portfolio.get("gold", [])
+                        cash_accounts = portfolio.get("cash_accounts", [])
+                        liabilities = portfolio.get("liabilities", [])
 
-                    gold_price_per_ounce = day_prices_series.get("GC=F", 0)
-                    gold_price_per_gram = (gold_price_per_ounce / OUNCES_TO_GRAMS) if pd.notna(gold_price_per_ounce) and gold_price_per_ounce > 0 else 0
+                        gold_price_per_ounce = prices_series.get("GC=F", 0)
+                        gold_price_per_gram = (gold_price_per_ounce / OUNCES_TO_GRAMS) if pd.notna(gold_price_per_ounce) and gold_price_per_ounce > 0 else 0
 
-                    total_stock_value_usd = sum(s.get('quantity',0) * day_prices_series.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1) for s in stock_holdings if pd.notna(day_prices_series.get(s['ticker'])))
-                    total_crypto_value_usd = sum(c.get('quantity',0) * day_prices_series.get(f"{c['symbol'].upper()}-USD", 0) for c in crypto_holdings if pd.notna(day_prices_series.get(f"{c['symbol'].upper()}-USD")))
-                    total_gold_value_usd = sum(g.get('grams', 0) * gold_price_per_gram for g in gold_holdings)
-                    total_cash_balance_usd = sum(acc.get('balance',0) / exchange_rates.get(acc.get('currency', 'USD'), 1) for acc in cash_accounts)
-                    total_liabilities_usd = sum(liab.get('balance',0) / exchange_rates.get(liab.get('currency', 'USD'), 1) for liab in liabilities)
+                        total_stock_value_usd = sum(s.get('quantity',0) * prices_series.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1) for s in stock_holdings if pd.notna(prices_series.get(s['ticker'])))
+                        total_crypto_value_usd = sum(c.get('quantity',0) * prices_series.get(f"{c['symbol'].upper()}-USD", 0) for c in crypto_holdings if pd.notna(prices_series.get(f"{c['symbol'].upper()}-USD")))
+                        total_gold_value_usd = sum(g.get('grams', 0) * gold_price_per_gram for g in gold_holdings)
+                        total_cash_balance_usd = sum(acc.get('balance',0) / exchange_rates.get(acc.get('currency', 'USD'), 1) for acc in cash_accounts)
+                        total_liabilities_usd = sum(liab.get('balance',0) / exchange_rates.get(liab.get('currency', 'USD'), 1) for liab in liabilities)
 
-                    total_assets_usd = total_stock_value_usd + total_cash_balance_usd + total_crypto_value_usd + total_gold_value_usd
-                    net_worth_usd = total_assets_usd - total_liabilities_usd
+                        total_assets_usd = total_stock_value_usd + total_cash_balance_usd + total_crypto_value_usd + total_gold_value_usd
+                        return total_assets_usd - total_liabilities_usd
+
+                    # 5. 计算开盘和收盘的净资产
+                    net_worth_open = calculate_net_worth(open_prices_series)
+                    net_worth_close = calculate_net_worth(close_prices_series)
                     
-                    daily_net_worth_data.append({'date': date, 'net_worth_usd': net_worth_usd})
+                    daily_net_worth_data.append({
+                        'date': date,
+                        'net_worth_open': net_worth_open,
+                        'net_worth_close': net_worth_close
+                    })
             
             benchmark_ticker = st.text_input("添加市场基准对比 (例如 SPY)", "", key="benchmark_ticker_hist")
             history_df = pd.DataFrame(daily_net_worth_data)
@@ -584,17 +602,39 @@ def display_dashboard():
             history_df = history_df.set_index('date').sort_index()
             
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=history_df.index, y=history_df['net_worth_usd'] * display_rate, mode='lines', name='我的投资组合'))
+
+            # 添加收盘市值轨迹
+            fig.add_trace(go.Scatter(
+                x=history_df.index, 
+                y=history_df['net_worth_close'] * display_rate, 
+                mode='lines', 
+                name='收盘市值',
+                line=dict(color='royalblue'),
+                hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>收盘市值: {display_symbol}%{{y:,.2f}} {display_curr}<extra></extra>"
+            ))
+            
+            # 添加开盘市值轨迹并填充区域
+            fig.add_trace(go.Scatter(
+                x=history_df.index, 
+                y=history_df['net_worth_open'] * display_rate, 
+                mode='lines', 
+                name='开盘市值',
+                line=dict(width=0), # 隐藏开盘价的线
+                fill='tonexty', # 填充到上一条轨迹的区域
+                fillcolor='rgba(65,105,225,0.2)',
+                hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>开盘市值: {display_symbol}%{{y:,.2f}} {display_curr}<extra></extra>"
+            ))
             
             if benchmark_ticker:
                 # 基准对比逻辑保持不变，但现在会基于更精确的起始点
-                benchmark_data = get_historical_data_yf(benchmark_ticker, days=(end_hist_date - start_hist_date).days + 1)
-                if not benchmark_data.empty:
+                benchmark_df = get_historical_data_yf(benchmark_ticker, days=(end_hist_date - start_hist_date).days + 1)
+                if not benchmark_df.empty:
+                    benchmark_data = benchmark_df['Close'] # 选择'Close'列
                     # 确保benchmark数据和我们的历史数据对齐
                     benchmark_data_reindexed = benchmark_data.reindex(history_df.index, method='ffill').dropna()
                     if not benchmark_data_reindexed.empty and not history_df.empty:
                         # 归一化处理，使起点一致
-                        initial_portfolio_value = history_df['net_worth_usd'].iloc[0] * display_rate
+                        initial_portfolio_value = history_df['net_worth_close'].iloc[0] * display_rate
                         benchmark_data_normalized = (benchmark_data_reindexed / benchmark_data_reindexed.iloc[0]) * initial_portfolio_value
                         fig.add_trace(go.Scatter(x=benchmark_data_normalized.index, y=benchmark_data_normalized, mode='lines', name=benchmark_ticker))
 
@@ -602,7 +642,11 @@ def display_dashboard():
                 if start_date: fig.add_vline(x=start_date, line_width=2, line_dash="dash", line_color="green", annotation_text="开始日期")
                 if end_date: fig.add_vline(x=end_date, line_width=2, line_dash="dash", line_color="red", annotation_text="结束日期")
             
-            fig.update_layout(title_text=f"净资产历史趋势 ({display_curr})", yaxis_title=f"净资产 ({display_symbol})")
+            fig.update_layout(
+                title_text=f"净资产历史趋势 ({display_curr})", 
+                yaxis_title=f"净资产 ({display_symbol})",
+                hovermode="x unified"
+            )
             st.plotly_chart(fig, use_container_width=True)
 
     with tab5:
@@ -703,4 +747,5 @@ if st.session_state.logged_in:
     display_dashboard()
     if st.session_state.user_email == ADMIN_EMAIL: display_admin_panel()
 else: display_login_form()
+
 
