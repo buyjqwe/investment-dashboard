@@ -630,6 +630,10 @@ def display_dashboard():
                 benchmark_df = get_historical_data_yf(benchmark_ticker, days=(end_hist_date - start_hist_date).days + 1)
                 if not benchmark_df.empty:
                     benchmark_data = benchmark_df['Close'] # 选择'Close'列
+                    # --- FIX: Ensure benchmark index is timezone-naive ---
+                    if benchmark_data.index.tz is not None:
+                        benchmark_data.index = benchmark_data.index.tz_localize(None)
+                    
                     # 确保benchmark数据和我们的历史数据对齐
                     benchmark_data_reindexed = benchmark_data.reindex(history_df.index, method='ffill').dropna()
                     if not benchmark_data_reindexed.empty and not history_df.empty:
@@ -747,5 +751,4 @@ if st.session_state.logged_in:
     display_dashboard()
     if st.session_state.user_email == ADMIN_EMAIL: display_admin_panel()
 else: display_login_form()
-
 
