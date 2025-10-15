@@ -643,8 +643,9 @@ def display_dashboard():
                         fig.add_trace(go.Scatter(x=benchmark_data_normalized.index, y=benchmark_data_normalized, mode='lines', name=benchmark_ticker))
 
             if analysis_mode == "历史快照":
-                if start_date: fig.add_vline(x=start_date, line_width=2, line_dash="dash", line_color="green", annotation_text="开始日期")
-                if end_date: fig.add_vline(x=end_date, line_width=2, line_dash="dash", line_color="red", annotation_text="结束日期")
+                # --- FIX: Convert datetime.date to datetime.datetime for Plotly ---
+                if start_date: fig.add_vline(x=datetime.combine(start_date, datetime.min.time()), line_width=2, line_dash="dash", line_color="green", annotation_text="开始日期")
+                if end_date: fig.add_vline(x=datetime.combine(end_date, datetime.min.time()), line_width=2, line_dash="dash", line_color="red", annotation_text="结束日期")
             
             fig.update_layout(
                 title_text=f"净资产历史趋势 ({display_curr})", 
@@ -751,4 +752,5 @@ if st.session_state.logged_in:
     display_dashboard()
     if st.session_state.user_email == ADMIN_EMAIL: display_admin_panel()
 else: display_login_form()
+
 
