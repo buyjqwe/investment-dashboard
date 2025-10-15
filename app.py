@@ -215,7 +215,7 @@ def get_detailed_history_df(_asset_history, start_date, end_date):
 
     all_historical_tickers = set()
     for snapshot in _asset_history:
-        portfolio = snapshot.get('portfolio', {})
+        portfolio = snapshot.get('portfolio', {}) if snapshot else {}
         for s in portfolio.get("stocks", []): all_historical_tickers.add(s['ticker'])
         for c in portfolio.get("crypto", []): all_historical_tickers.add(f"{c['symbol'].upper()}-USD")
     all_historical_tickers.add("GC=F")
