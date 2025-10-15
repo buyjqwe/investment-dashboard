@@ -22,6 +22,20 @@ SESSION_EXPIRATION_DAYS = 7
 DATA_REFRESH_INTERVAL_SECONDS = 3600  # 1 hour
 BASE_ONEDRIVE_PATH = "root:/Apps/StreamlitDashboard"
 OUNCES_TO_GRAMS = 31.1035
+SECTOR_TRANSLATION = {
+    'Technology': '科技',
+    'Financial Services': '金融服务',
+    'Healthcare': '医疗健康',
+    'Industrials': '工业',
+    'Consumer Cyclical': '周期性消费',
+    'Consumer Defensive': '防御性消费',
+    'Basic Materials': '基础材料',
+    'Communication Services': '通信服务',
+    'Energy': '能源',
+    'Real Estate': '房地产',
+    'Utilities': '公用事业',
+    'N/A': '未分类'
+}
 
 # --- 初始化 Session State ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
@@ -524,19 +538,19 @@ def display_dashboard():
         display_asset_allocation_chart(total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, display_curr, display_rate, display_symbol)
         st.subheader("资产与盈亏明细")
         st.write("📈 **股票持仓**")
-        st.dataframe(pd.DataFrame(stock_df_data))
+        st.table(pd.DataFrame(stock_df_data))
         st.write("🥇 **黄金持仓**")
-        st.dataframe(pd.DataFrame(gold_df_data))
+        st.table(pd.DataFrame(gold_df_data))
         c1, c2, c3 = st.columns(3)
         with c1:
             st.write("💵 **现金账户**")
-            st.dataframe(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]))
+            st.table(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]))
         with c2:
             st.write("🪙 **加密货币持仓**")
-            st.dataframe(pd.DataFrame(crypto_df_data))
+            st.table(pd.DataFrame(crypto_df_data))
         with c3:
             st.write("💳 **负债账户**")
-            st.dataframe(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]))
+            st.table(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]))
 
     with tab2:
         st.subheader("✍️ 记录一笔新流水")
@@ -718,10 +732,32 @@ def display_dashboard():
 
     with tab4:
         st.subheader("📈 资产历史趋势")
+
+        chart_type = st.radio(
+            "选择图表类型",
+            ('市值', '回报率 (%)'),
+            horizontal=True,
+            key='history_chart_type'
+        )
+
         if history_df.empty or len(history_df.index) < 2:
             st.info("历史数据不足（少于2天），无法生成图表。")
         else:
             with st.spinner("正在生成历史趋势图..."):
+                plot_df = history_df.copy()
+                
+                if chart_type == '回报率 (%)':
+                    # Normalize data to show percentage change
+                    plot_df = (plot_df / plot_df.iloc[0]) * 100
+                    yaxis_title = "回报率 (%)"
+                    hovertemplate_prefix = ""
+                    hovertemplate_suffix = "%"
+                else: # Default is '市值'
+                    plot_df = plot_df.mul(display_rate)
+                    yaxis_title = f"市值 ({display_symbol})"
+                    hovertemplate_prefix = display_symbol
+                    hovertemplate_suffix = f" {display_curr}"
+
                 fig = go.Figure()
                 categories = {
                     'net_worth_usd': '总净资产',
@@ -732,15 +768,15 @@ def display_dashboard():
                 }
                 for key, name in categories.items():
                     fig.add_trace(go.Scatter(
-                        x=history_df.index,
-                        y=history_df[key] * display_rate,
+                        x=plot_df.index,
+                        y=plot_df[key],
                         mode='lines',
                         name=name,
-                        hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>{name}: {display_symbol}%{{y:,.2f}} {display_curr}<extra></extra>"
+                        hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>{name}: {hovertemplate_prefix}%{{y:,.2f}}{hovertemplate_suffix}<extra></extra>"
                     ))
                 fig.update_layout(
-                    title_text=f"资产市值历史趋势 ({display_curr})",
-                    yaxis_title=f"市值 ({display_symbol})",
+                    title_text=f"资产{chart_type}历史趋势",
+                    yaxis_title=yaxis_title,
                     hovermode="x unified"
                 )
                 st.plotly_chart(fig, use_container_width=True)
@@ -751,13 +787,17 @@ def display_dashboard():
         with st.spinner("正在获取持仓股票的行业信息..."):
             for s in stock_holdings:
                 profile = get_stock_profile_yf(s['ticker'])
-                sector = profile.get('sector', 'N/A') if profile else 'N/A'
+                sector_english = profile.get('sector', 'N/A') if profile else 'N/A'
+                sector_chinese = SECTOR_TRANSLATION.get(sector_english, sector_english)
                 value_usd = s.get('quantity',0) * prices.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1)
-                sector_values[sector] = sector_values.get(sector, 0) + value_usd
-        if not sector_values or all(s == 'N/A' for s in sector_values.keys()):
+                sector_values[sector_chinese] = sector_values.get(sector_chinese, 0) + value_usd
+
+        plot_values = {k: v for k, v in sector_values.items() if v > 0.01}
+
+        if not plot_values:
             st.info("未能获取到股票的行业分类信息，或您尚未持有任何股票。")
         else:
-            sector_df = pd.DataFrame(list(sector_values.items()), columns=['sector', 'value_usd']).sort_values(by='value_usd', ascending=False)
+            sector_df = pd.DataFrame(list(plot_values.items()), columns=['sector', 'value_usd']).sort_values(by='value_usd', ascending=False)
             fig = go.Figure(data=[go.Pie(labels=sector_df['sector'], values=sector_df['value_usd'] * display_rate, hole=.4, textinfo='percent+label', hovertemplate=f"<b>%{{label}}</b><br>市值: {display_symbol}%{{value:,.2f}}<br>占比: %{{percent}}<extra></extra>")])
             fig.update_layout(title_text='股票持仓行业分布', showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
@@ -831,3 +871,4 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
+
