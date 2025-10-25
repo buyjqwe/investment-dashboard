@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta
 import secrets
 import plotly.graph_objects as go
+import plotly.express as px  # <-- ADDED THIS IMPORT
 import hashlib
 from copy import deepcopy
 import yfinance as yf
@@ -497,7 +498,7 @@ def display_dashboard():
     start_date = st.sidebar.date_input("开始日期", value=default_start_date, min_value=min_date, max_value=max_date)
 
     # Convert asset_history to a hashable type for caching
-    asset_history_tuples = tuple(tuple(s.items()) for s in asset_history)
+    asset_history_tuples = tuple(map(tuple, (s.items() for s in asset_history)))
     history_df = get_detailed_history_df(asset_history_tuples, start_date, max_date - timedelta(days=1))
     
     # Append today's data to the history for a complete chart
@@ -511,15 +512,6 @@ def display_dashboard():
             'cash_value_usd': total_cash_balance_usd,
         }]).set_index('date')
         history_df = pd.concat([history_df, today_data])
-    elif not asset_history: # Handle case with no history at all
-         history_df = pd.DataFrame([{
-            'date': pd.to_datetime(max_date),
-            'net_worth_usd': net_worth_usd,
-            'stock_value_usd': total_stock_value_usd,
-            'crypto_value_usd': total_crypto_value_usd,
-            'gold_value_usd': total_gold_value_usd,
-            'cash_value_usd': total_cash_balance_usd,
-        }]).set_index('date')
 
 
     st.header("所选周期表现 (核心指标)")
@@ -566,57 +558,57 @@ def display_dashboard():
     crypto_df_data = [{"代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", "成本价": f"${c.get('average_cost', 0):,.2f}", "现价": f"${prices.get(c['symbol'], 0):,.2f}", "市值": f"${c.get('quantity', 0) * prices.get(c['symbol'], 0):,.2f}", "未实现盈亏": f"${(c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0))) / (c.get('quantity', 0) * c.get('average_cost', 0)) * 100) if (c.get('quantity', 0) * c.get('average_cost', 0)) > 0 else 0:.2f}%"} for c in crypto_holdings]
     gold_df_data = [{"资产": "黄金", "克数 (g)": g.get('grams', 0), "成本价 ($/g)": f"${g.get('average_cost_per_gram', 0):,.2f}", "现价 ($/g)": f"${gold_price_per_gram:,.2f}", "市值": f"${g.get('grams', 0) * gold_price_per_gram:,.2f}", "未实现盈亏": f"${(g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0)):,.2f}", "回报率(%)": f"{(((g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0))) / (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) * 100) if (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) > 0 else 0:.2f}%"} for g in gold_holdings]
 
-    # --- MODIFICATION: Removed tab5 (Sector) and tab6 (AI), re-indexed to 5 tabs ---
+    # --- MODIFICATION: Removed tab5 (Sector) and tab6 (AI), consolidated into 5 tabs ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 资产总览", "✍️ 交易管理", "⚙️ 编辑资产", "📈 历史趋势", "🤖 AI深度分析"])
 
     with tab1:
         st.subheader("资产配置概览")
-        display_asset_allocation_chart(total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, display_curr, display_rate, display_symbol)
         
+        # --- MODIFICATION: Moved Sector chart logic from old tab5 to here ---
+        col1_alloc, col2_alloc = st.columns(2)
+        with col1_alloc:
+             display_asset_allocation_chart(total_stock_value_usd, total_cash_balance_usd, total_crypto_value_usd, total_gold_value_usd, display_curr, display_rate, display_symbol)
+        
+        with col2_alloc:
+            sector_values = {}
+            with st.spinner("正在获取持仓股票的行业信息..."):
+                for s in stock_holdings:
+                    profile = get_stock_profile_yf(s['ticker'])
+                    sector_english = profile.get('sector', 'N/A') if profile else 'N/A'
+                    sector_chinese = SECTOR_TRANSLATION.get(sector_english, sector_english)
+                    value_usd = s.get('quantity',0) * prices.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1)
+                    sector_values[sector_chinese] = sector_values.get(sector_chinese, 0) + value_usd
+
+            plot_values = {k: v for k, v in sector_values.items() if v > 0.01}
+
+            if not plot_values:
+                st.info("未能获取到股票的行业分类信息，或您尚未持有任何股票。")
+            else:
+                sector_df = pd.DataFrame(list(plot_values.items()), columns=['sector', 'value_usd']).sort_values(by='value_usd', ascending=False)
+                fig = go.Figure(data=[go.Pie(labels=sector_df['sector'], values=sector_df['value_usd'] * display_rate, hole=.4, textinfo='percent+label', hovertemplate=f"<b>%{{label}}</b><br>市值: {display_symbol}%{{value:,.2f}}<br>占比: %{{percent}}<extra></extra>")])
+                fig.update_layout(title_text='股票持仓行业分布', showlegend=False, height=300, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+
         st.subheader("资产与盈亏明细")
         st.write("📈 **股票持仓**")
-        # --- MODIFICATION: Replaced st.table with st.dataframe ---
+        # --- MODIFICATION: Use dataframe to avoid internal scrollbars ---
         st.dataframe(pd.DataFrame(stock_df_data), use_container_width=True, hide_index=True)
-        
         st.write("🥇 **黄金持仓**")
-        # --- MODIFICATION: Replaced st.table with st.dataframe ---
         st.dataframe(pd.DataFrame(gold_df_data), use_container_width=True, hide_index=True)
         
         c1, c2, c3 = st.columns(3)
         with c1:
             st.write("💵 **现金账户**")
-            # --- MODIFICATION: Replaced st.table with st.dataframe ---
-            st.dataframe(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]), use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Switched to st.table to remove internal scrollbar ---
+            st.table(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]))
         with c2:
             st.write("🪙 **加密货币持仓**")
-            # --- MODIFICATION: Replaced st.table with st.dataframe ---
+            # --- MODIFICATION: Kept dataframe for this complex table ---
             st.dataframe(pd.DataFrame(crypto_df_data), use_container_width=True, hide_index=True)
         with c3:
             st.write("💳 **负债账户**")
-            # --- MODIFICATION: Replaced st.table with st.dataframe ---
-            st.dataframe(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]), use_container_width=True, hide_index=True)
-
-        # --- MODIFICATION: Moved Sector chart logic from old tab5 to here ---
-        st.subheader("🔬 股票行业板块分布")
-        sector_values = {}
-        with st.spinner("正在获取持仓股票的行业信息..."):
-            for s in stock_holdings:
-                profile = get_stock_profile_yf(s['ticker'])
-                sector_english = profile.get('sector', 'N/A') if profile else 'N/A'
-                sector_chinese = SECTOR_TRANSLATION.get(sector_english, sector_english)
-                value_usd = s.get('quantity',0) * prices.get(s['ticker'], 0) / exchange_rates.get(s.get('currency', 'USD'), 1)
-                sector_values[sector_chinese] = sector_values.get(sector_chinese, 0) + value_usd
-
-        plot_values = {k: v for k, v in sector_values.items() if v > 0.01}
-
-        if not plot_values:
-            st.info("未能获取到股票的行业分类信息，或您尚未持有任何股票。")
-        else:
-            sector_df = pd.DataFrame(list(plot_values.items()), columns=['sector', 'value_usd']).sort_values(by='value_usd', ascending=False)
-            fig = go.Figure(data=[go.Pie(labels=sector_df['sector'], values=sector_df['value_usd'] * display_rate, hole=.4, textinfo='percent+label', hovertemplate=f"<b>%{{label}}</b><br>市值: {display_symbol}%{{value:,.2f}}<br>占比: %{{percent}}<extra></extra>")])
-            fig.update_layout(title_text='股票持仓行业分布', showlegend=False, height=350, margin=dict(t=40, b=10))
-            st.plotly_chart(fig, use_container_width=True)
-
+            # --- MODIFICATION: Switched to st.table to remove internal scrollbar ---
+            st.table(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]))
 
     with tab2:
         st.subheader("✍️ 记录一笔新流水")
@@ -701,11 +693,12 @@ def display_dashboard():
                     
                     from_account["balance"] += amount
                     price_per_unit = amount / quantity
-                    # --- MODIFICATION: Calculate and store realized P/L ---
                     realized_pl = (price_per_unit - holding.get('average_cost', 0)) * quantity
-                    new_transaction['realized_pl'] = realized_pl
-                    
                     holding_currency = holding.get('currency', 'USD') if "股票" in trans_type else "USD"
+                    
+                    # --- MODIFICATION: Save P/L to the transaction record ---
+                    new_transaction['realized_pl'] = realized_pl
+                    new_transaction['pl_currency'] = holding_currency
                     st.toast(f"实现盈亏: {CURRENCY_SYMBOLS.get(holding_currency, '$')}{realized_pl:,.2f}")
                     
                     holding['quantity'] -= quantity
@@ -722,15 +715,15 @@ def display_dashboard():
         transactions = user_profile.get("transactions", [])
         if transactions:
             transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
-            # --- MODIFICATION: Replaced st.dataframe with st.dataframe ---
+            # --- MODIFICATION: Use dataframe to avoid internal scrollbars ---
             st.dataframe(transactions_df, use_container_width=True, hide_index=True)
         else:
             st.write("暂无交易记录。")
     
     with tab3:
         st.subheader("⚙️ 编辑现有资产与负债")
-        # --- MODIFICATION: Changed warning to a more explicit error message ---
-        st.error("**警告**：此页面仅用于**修正数据错误**。任何资产数量或成本价的变动**不会**自动生成交易流水或计算盈亏。如需记录买卖，请使用 **'✍️ 交易管理'** 标签页。")
+        # --- MODIFICATION: Added warning about P/L ---
+        st.error("**重要提示**：此页面仅用于**修正数据**（例如，初始录入错误）。\n\n在此处直接修改资产**不会**自动生成交易流水或计算盈亏。\n\n如需**卖出**资产并正确记录盈亏，请使用“**✍️ 交易管理**”页面。")
         
         edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币", "🥇 黄金"])
         
@@ -744,7 +737,7 @@ def display_dashboard():
         with edit_tabs[0]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
             if st.button("💾 保存现金账户修改", key="save_cash"):
                 user_portfolio["cash_accounts"] = edited_df.dropna(subset=['name']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
@@ -752,7 +745,7 @@ def display_dashboard():
         with edit_tabs[1]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)}, use_container_width=True)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
             if st.button("💾 保存负债账户修改", key="save_liabilities"):
                 user_portfolio["liabilities"] = edited_df.dropna(subset=['name']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新！"); time.sleep(1); st.rerun()
@@ -760,7 +753,7 @@ def display_dashboard():
         with edit_tabs[2]:
             schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
             df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", help="将自动获取，无需填写", disabled=True)}, use_container_width=True)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", help="将自动获取，无需填写", disabled=True)}, use_container_width=True, hide_index=True)
             if st.button("💾 保存股票持仓修改", key="save_stocks"):
                 edited_list = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records')
                 original_map = {s['ticker']: s for s in deepcopy(user_portfolio.get("stocks", []))}
@@ -786,7 +779,7 @@ def display_dashboard():
         with edit_tabs[3]:
             schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
             df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)}, use_container_width=True)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
             if st.button("💾 保存加密货币修改", key="save_crypto"):
                 edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
                 for holding in edited_list: holding['symbol'] = holding['symbol'].upper()
@@ -797,7 +790,7 @@ def display_dashboard():
             st.info("记录您持有的实物或纸黄金。成本价请以美元/克计价。")
             schema = {'grams': 'float64', 'average_cost_per_gram': 'float64'}
             df = to_df_with_schema(user_portfolio.get("gold",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
             if st.button("💾 保存黄金持仓修改", key="save_gold"):
                 user_portfolio["gold"] = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新！"); time.sleep(1); st.rerun()
@@ -840,7 +833,8 @@ def display_dashboard():
                 }
                 
                 # Store colors to match text with lines
-                colors = go.layout.Template().data.layout.colorway
+                # --- MODIFICATION: Fixed AttributeError ---
+                colors = px.colors.qualitative.Plotly
                 
                 for i, (key, name) in enumerate(categories.items()):
                     color = colors[i % len(colors)]
@@ -878,7 +872,7 @@ def display_dashboard():
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # --- MODIFICATION: Remove summary metrics from here ---
+                # --- MODIFICATION: Removed summary metrics from here ---
                 
     # --- MODIFICATION: Changed from tab6 to tab5 ---
     with tab5:
@@ -950,5 +944,4 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
-
 
