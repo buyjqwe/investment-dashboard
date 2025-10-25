@@ -171,6 +171,11 @@ def handle_verify_code(email, code):
         st.session_state.user_email = email
         st.session_state.login_step = "logged_in"
         st.query_params["session_token"] = token
+        
+        # --- MODIFICATION: Clear profile on new login to force re-fetch ---
+        if 'user_profile' in st.session_state:
+            del st.session_state.user_profile
+            
         st.rerun()
     else:
         st.sidebar.error("验证码错误。")
@@ -187,6 +192,11 @@ def check_session_from_query_params():
         st.session_state.logged_in = True
         st.session_state.user_email = session_info["email"]
         st.session_state.login_step = "logged_in"
+        
+        # --- MODIFICATION: Clear profile on session resume to force re-fetch ---
+        if 'user_profile' in st.session_state:
+            del st.session_state.user_profile
+            
     elif "session_token" in st.query_params:
         st.query_params.clear()
 
@@ -424,10 +434,18 @@ def display_asset_allocation_chart(stock_usd, cash_usd, crypto_usd, gold_usd, di
 def display_dashboard():
     st.title(f"🚀 {st.session_state.user_email} 的专业仪表盘")
     asset_history = get_asset_history(st.session_state.user_email)
-    user_profile = get_user_profile(st.session_state.user_email)
-    if user_profile is None:
-        st.error("无法加载用户数据。")
-        st.stop()
+    
+    # --- MODIFICATION: Load from session_state if available, else fetch ---
+    # This prevents the race condition where OneDrive save is slower than the rerun.
+    if 'user_profile' not in st.session_state:
+        st.session_state.user_profile = get_user_profile(st.session_state.user_email)
+        if st.session_state.user_profile is None:
+             st.error("无法加载用户数据。")
+             st.stop()
+
+    # Use the session state version for this run
+    user_profile = st.session_state.user_profile
+    # --- END MODIFICATION ---
     
     user_portfolio = user_profile.setdefault("portfolio", {})
     for key in ["stocks", "cash_accounts", "crypto", "liabilities", "transactions", "gold"]:
@@ -442,6 +460,9 @@ def display_dashboard():
     
     if st.sidebar.button('🔄 刷新市场数据'):
         st.session_state.last_market_data_fetch = 0
+        # --- MODIFICATION: Force re-fetch of profile on manual refresh ---
+        if 'user_profile' in st.session_state:
+            del st.session_state.user_profile
     
     now = time.time()
     
@@ -637,6 +658,8 @@ def display_dashboard():
                 "symbol": symbol, "quantity": quantity, 
                 "realized_pl": realized_pl, "pl_currency": pl_currency
             }
+            # Remove keys with None values
+            new_tx = {k: v for k, v in new_tx.items() if v is not None}
             user_profile.setdefault("transactions", []).insert(0, new_tx)
 
         # --- MODIFICATION: Cash account list for selection menus ---
@@ -681,6 +704,10 @@ def display_dashboard():
                         add_transaction("[自动] 余额修正", tx_type, abs(diff), currency, name)
 
                 user_portfolio["cash_accounts"] = edited_list
+                
+                # --- MODIFICATION: Explicitly update session state ---
+                st.session_state.user_profile = user_profile
+                
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
         
         with edit_tabs[1]:
@@ -692,6 +719,10 @@ def display_dashboard():
             if st.button("💾 保存负债账户修改", key="save_liabilities"):
                 # Liabilities are simple, no transaction linking needed
                 user_portfolio["liabilities"] = edited_df.dropna(subset=['name']).to_dict('records')
+                
+                # --- MODIFICATION: Explicitly update session state ---
+                st.session_state.user_profile = user_profile
+                
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新！"); time.sleep(1); st.rerun()
 
         with edit_tabs[2]:
@@ -768,6 +799,10 @@ def display_dashboard():
                         add_transaction(f"[自动] 卖出 {ticker}", "卖出股票", amount, cash_acct['currency'], cash_acct['name'], ticker, qty_sold, realized_pl, currency)
 
                 user_portfolio["stocks"] = edited_list
+                
+                # --- MODIFICATION: Explicitly update session state ---
+                st.session_state.user_profile = user_profile
+                
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
 
         with edit_tabs[3]:
@@ -830,6 +865,10 @@ def display_dashboard():
                         add_transaction(f"[自动] 卖出 {symbol}", "卖出加密货币", amount, cash_acct['currency'], cash_acct['name'], symbol, qty_sold, realized_pl, currency)
 
                 user_portfolio["crypto"] = edited_list
+                
+                # --- MODIFICATION: Explicitly update session state ---
+                st.session_state.user_profile = user_profile
+                
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
         
         with edit_tabs[4]:
@@ -877,18 +916,24 @@ def display_dashboard():
                     add_transaction(f"[自动] 卖出黄金", "卖出黄金", amount, cash_acct['currency'], cash_acct['name'], "GOLD (g)", qty_sold, realized_pl, currency)
 
                 user_portfolio["gold"] = edited_list
+                
+                # --- MODIFICATION: Explicitly update session state ---
+                st.session_state.user_profile = user_profile
+                
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
 
         st.subheader("📑 交易流水")
         transactions = user_profile.get("transactions", [])
         if transactions:
             transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
-            # Format columns for better display
-            if 'symbol' not in transactions_df.columns: transactions_df['symbol'] = None
-            if 'quantity' not in transactions_df.columns: transactions_df['quantity'] = None
-            if 'realized_pl' not in transactions_df.columns: transactions_df['realized_pl'] = None
             
-            display_cols = ["date", "type", "description", "amount", "currency", "account", "symbol", "quantity", "realized_pl"]
+            # Format columns for better display
+            if 'symbol' not in transactions_df.columns: transactions_df['symbol'] = pd.NA
+            if 'quantity' not in transactions_df.columns: transactions_df['quantity'] = pd.NA
+            if 'realized_pl' not in transactions_df.columns: transactions_df['realized_pl'] = pd.NA
+            if 'pl_currency' not in transactions_df.columns: transactions_df['pl_currency'] = pd.NA
+            
+            display_cols = ["date", "type", "description", "amount", "currency", "account", "symbol", "quantity", "realized_pl", "pl_currency"]
             # Filter out columns that are entirely empty
             display_cols = [col for col in display_cols if col in transactions_df.columns and not transactions_df[col].isnull().all()]
             
@@ -1044,5 +1089,4 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
-
 
