@@ -558,8 +558,8 @@ def display_dashboard():
     crypto_df_data = [{"代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", "成本价": f"${c.get('average_cost', 0):,.2f}", "现价": f"${prices.get(c['symbol'], 0):,.2f}", "市值": f"${c.get('quantity', 0) * prices.get(c['symbol'], 0):,.2f}", "未实现盈亏": f"${(c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0))) / (c.get('quantity', 0) * c.get('average_cost', 0)) * 100) if (c.get('quantity', 0) * c.get('average_cost', 0)) > 0 else 0:.2f}%"} for c in crypto_holdings]
     gold_df_data = [{"资产": "黄金", "克数 (g)": g.get('grams', 0), "成本价 ($/g)": f"${g.get('average_cost_per_gram', 0):,.2f}", "现价 ($/g)": f"${gold_price_per_gram:,.2f}", "市值": f"${g.get('grams', 0) * gold_price_per_gram:,.2f}", "未实现盈亏": f"${(g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0)):,.2f}", "回报率(%)": f"{(((g.get('grams', 0) * gold_price_per_gram) - (g.get('grams', 0) * g.get('average_cost_per_gram', 0))) / (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) * 100) if (g.get('grams', 0) * g.get('average_cost_per_gram', 0)) > 0 else 0:.2f}%"} for g in gold_holdings]
 
-    # --- MODIFICATION: Removed tab5 (Sector) and tab6 (AI), consolidated into 5 tabs ---
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 资产总览", "✍️ 交易管理", "⚙️ 编辑资产", "📈 历史趋势", "🤖 AI深度分析"])
+    # --- MODIFICATION: Removed manual transaction tab (tab2) ---
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 资产总览", "✍️ 资产编辑与交易", "📈 历史趋势", "🤖 AI深度分析"])
 
     with tab1:
         st.subheader("资产配置概览")
@@ -611,164 +611,108 @@ def display_dashboard():
             # --- MODIFICATION: Switched to st.table to remove internal scrollbar ---
             st.table(pd.DataFrame([{"名称": liab['name'],"货币": liab['currency'], "金额": f"{CURRENCY_SYMBOLS.get(liab['currency'], '')}{liab['balance']:,.2f}"} for liab in liabilities]))
 
+    # --- MODIFICATION: This is the new tab2 (formerly tab3), with all logic combined ---
     with tab2:
-        st.subheader("✍️ 记录一笔新流水")
-        with st.form("transaction_form", clear_on_submit=True):
-            trans_type = st.selectbox("类型", ["收入", "支出", "买入股票", "卖出股票", "买入加密货币", "卖出加密货币", "转账"])
-            col1, col2 = st.columns(2)
-            with col1:
-                description = st.text_input("描述")
-                amount = st.number_input("总金额", min_value=0.01, format="%.2f")
-                from_account_name = st.selectbox("选择现金账户", [acc.get("name", "") for acc in cash_accounts], key="from_acc")
-            with col2:
-                symbol, quantity, to_account_name = "", 0.0, None
-                if "股票" in trans_type or "加密货币" in trans_type:
-                    symbol = st.text_input("资产代码").upper()
-                    if "股票" in trans_type:
-                        quantity = st.number_input("数量", min_value=1e-4, format="%.4f")
-                    else:
-                        quantity = st.number_input("数量", min_value=1e-8, format="%.8f")
-                elif trans_type == "转账":
-                    to_account_name = st.selectbox("转入账户", [n for n in [acc.get("name", "") for acc in cash_accounts] if n != from_account_name], key="to_acc")
-            
-            if st.form_submit_button("记录流水"):
-                if not from_account_name:
-                    st.error("操作失败：请先创建现金账户。")
-                    st.stop()
-                
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                from_account = next((acc for acc in cash_accounts if acc["name"] == from_account_name), None)
-                new_transaction = {"date": now_str, "type": trans_type, "description": description, "amount": amount, "currency": from_account["currency"], "account": from_account_name}
-                
-                # Transaction logic
-                if trans_type == "收入":
-                    from_account["balance"] += amount
-                elif trans_type == "支出":
-                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
-                    from_account["balance"] -= amount
-                elif trans_type == "转账":
-                    if from_account["balance"] < amount: st.error("转出账户余额不足！"); st.stop()
-                    to_account = next((acc for acc in cash_accounts if acc["name"] == to_account_name), None)
-                    if not to_account: st.error("转入账户未找到！"); st.stop()
-                    if from_account['currency'] != to_account['currency']: st.error("跨币种转账暂不支持。"); st.stop()
-                    from_account["balance"] -= amount
-                    to_account["balance"] += amount
-                elif trans_type == "买入股票":
-                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
-                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
-                    profile = get_stock_profile_yf(symbol)
-                    if not profile or not profile.get("currency"): st.error(f"无法获取股票 {symbol} 的信息，请检查代码是否有效。"); st.stop()
-                    
-                    stock_currency, cash_currency = profile["currency"].upper(), from_account["currency"]
-                    cost_in_stock_currency = (amount / exchange_rates.get(cash_currency, 1)) * exchange_rates.get(stock_currency, 1)
-                    price_per_unit = cost_in_stock_currency / quantity
-                    from_account["balance"] -= amount
-                    
-                    holding = next((h for h in stock_holdings if h.get("ticker") == symbol), None)
-                    if holding:
-                        old_cost_basis = holding.get('average_cost', 0) * holding.get('quantity', 0)
-                        new_quantity = holding.get('quantity', 0) + quantity
-                        holding['quantity'] = new_quantity
-                        holding['average_cost'] = (old_cost_basis + cost_in_stock_currency) / new_quantity
-                    else:
-                        stock_holdings.append({"ticker": symbol, "quantity": quantity, "average_cost": price_per_unit, "currency": stock_currency})
-                elif trans_type == "买入加密货币":
-                    if from_account["balance"] < amount: st.error("现金账户余额不足！"); st.stop()
-                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
-                    from_account["balance"] -= amount
-                    price_per_unit = amount / quantity
-                    holding = next((h for h in crypto_holdings if h.get("symbol") == symbol), None)
-                    if holding:
-                        new_total_cost = (holding.get('average_cost', 0) * holding.get('quantity', 0)) + amount
-                        holding['quantity'] += quantity
-                        holding['average_cost'] = new_total_cost / holding['quantity']
-                    else:
-                        crypto_holdings.append({"symbol": symbol, "quantity": quantity, "average_cost": price_per_unit})
-                elif "卖出" in trans_type:
-                    if quantity <= 0: st.error("数量必须大于0"); st.stop()
-                    asset_list, symbol_key = (stock_holdings, "ticker") if "股票" in trans_type else (crypto_holdings, "symbol")
-                    holding = next((h for h in asset_list if h.get(symbol_key) == symbol), None)
-                    if not holding or holding.get('quantity', 0) < quantity:
-                        st.error(f"卖出失败：{symbol} 数量不足。")
-                        st.stop()
-                    
-                    from_account["balance"] += amount
-                    price_per_unit = amount / quantity
-                    realized_pl = (price_per_unit - holding.get('average_cost', 0)) * quantity
-                    holding_currency = holding.get('currency', 'USD') if "股票" in trans_type else "USD"
-                    
-                    # --- MODIFICATION: Save P/L to the transaction record ---
-                    new_transaction['realized_pl'] = realized_pl
-                    new_transaction['pl_currency'] = holding_currency
-                    st.toast(f"实现盈亏: {CURRENCY_SYMBOLS.get(holding_currency, '$')}{realized_pl:,.2f}")
-                    
-                    holding['quantity'] -= quantity
-                    if holding['quantity'] < 1e-9:
-                        asset_list.remove(holding)
-                
-                user_profile.setdefault("transactions", []).insert(0, new_transaction)
-                if save_user_profile(st.session_state.user_email, user_profile):
-                    st.success("流水记录成功！")
-                    time.sleep(1)
-                    st.rerun()
-
-        st.subheader("📑 交易流水")
-        transactions = user_profile.get("transactions", [])
-        if transactions:
-            transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
-            # --- MODIFICATION: Use st.table to remove vertical scrollbar ---
-            st.table(transactions_df)
-        else:
-            st.write("暂无交易记录。")
-    
-    with tab3:
-        st.subheader("⚙️ 编辑现有资产与负债")
-        # --- MODIFICATION: Added warning about P/L ---
-        st.error("**重要提示**：此页面仅用于**修正数据**（例如，初始录入错误）。\n\n在此处直接修改资产**不会**自动生成交易流水或计算盈亏。\n\n如需**卖出**资产并正确记录盈亏，请使用“**✍️ 交易管理**”页面。")
+        st.subheader("✍️ 资产编辑与交易")
+        st.info("请在此处直接编辑您的资产。系统将自动对比差异，并为您生成交易流水。\n- **卖出**：系统将按**当前市场价**计算卖出金额和盈亏。\n- **买入**：系统将按您修改后的**平均成本**反推买入金额。")
         
-        edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币", "🥇 黄金"])
-        
+        # Helper function needed for this tab
         def to_df_with_schema(data, schema):
             df = pd.DataFrame(data)
             for col, col_type in schema.items():
                 if col not in df.columns:
                     df[col] = pd.Series(dtype=col_type)
             return df
+        
+        # --- MODIFICATION: Added function to find cash account by name ---
+        def get_cash_account(name):
+            return next((acc for acc in cash_accounts if acc["name"] == name), None)
+
+        # --- MODIFICATION: Added function to add transaction ---
+        def add_transaction(description, type, amount, currency, account_name, symbol=None, quantity=None, realized_pl=None, pl_currency=None):
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+            new_tx = {
+                "date": now_str, "type": type, "description": description, 
+                "amount": amount, "currency": currency, "account": account_name,
+                "symbol": symbol, "quantity": quantity, 
+                "realized_pl": realized_pl, "pl_currency": pl_currency
+            }
+            user_profile.setdefault("transactions", []).insert(0, new_tx)
+
+        # --- MODIFICATION: Cash account list for selection menus ---
+        cash_account_names = [acc.get("name", "") for acc in cash_accounts]
+        if not cash_account_names:
+            st.error("您必须至少创建一个现金账户才能进行交易。")
+            # Create a dummy list to prevent errors, though buttons will be disabled
+            cash_account_names = ["-"]
+
+
+        edit_tabs = st.tabs(["💵 现金", "💳 负债", "📈 股票", "🪙 加密货币", "🥇 黄金"])
 
         with edit_tabs[0]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
-            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
-            num_rows = len(df) + 5  # 5 extra rows for dynamic adding
-            calc_height = max(200, (num_rows + 1) * 35 + 3) # (rows + header) * px_per_row + border
+            
+            # Store 'before' state
+            cash_before_df = df.copy().set_index('name')
+            
+            calc_height = max(200, (len(df) + 6) * 35 + 3) # Dynamic height
             edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
+            
             if st.button("💾 保存现金账户修改", key="save_cash"):
-                user_portfolio["cash_accounts"] = edited_df.dropna(subset=['name']).to_dict('records')
+                edited_list = edited_df.dropna(subset=['name']).to_dict('records')
+                cash_after_df = pd.DataFrame(edited_list).set_index('name')
+
+                # Diff logic
+                diff_df = cash_before_df.merge(cash_after_df, on='name', how='outer', suffixes=('_old', '_new'))
+                
+                for name, row in diff_df.iterrows():
+                    balance_old = row.get('balance_old', 0)
+                    balance_new = row.get('balance_new', 0)
+                    currency = row.get('currency_new', row.get('currency_old', 'USD')) # Get currency
+
+                    if pd.isna(balance_old): # New Account
+                        add_transaction("[自动] 账户创建", "存款", balance_new, currency, name)
+                    elif pd.isna(balance_new): # Deleted Account
+                        add_transaction("[自动] 账户删除", "取款", balance_old, currency, name)
+                    elif balance_new != balance_old:
+                        diff = balance_new - balance_old
+                        tx_type = "存款" if diff > 0 else "取款"
+                        add_transaction("[自动] 余额修正", tx_type, abs(diff), currency, name)
+
+                user_portfolio["cash_accounts"] = edited_list
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
         
         with edit_tabs[1]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
-            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
-            num_rows = len(df) + 5
-            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            calc_height = max(200, (len(df) + 6) * 35 + 3)
             edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
+            
             if st.button("💾 保存负债账户修改", key="save_liabilities"):
+                # Liabilities are simple, no transaction linking needed
                 user_portfolio["liabilities"] = edited_df.dropna(subset=['name']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新！"); time.sleep(1); st.rerun()
 
         with edit_tabs[2]:
             schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
             df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
-            num_rows = len(df) + 5
-            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            
+            # Store 'before' state
+            stock_before_df = df.copy().set_index('ticker')
+
+            calc_height = max(200, (len(df) + 6) * 35 + 3)
             edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", help="将自动获取，无需填写", disabled=True)}, use_container_width=True, hide_index=True, height=calc_height)
-            if st.button("💾 保存股票持仓修改", key="save_stocks"):
+            
+            # --- MODIFICATION: Added cash account selector ---
+            cash_account_stock = st.selectbox("选择关联的现金账户（用于自动流水）", cash_account_names, key="cash_stock_link", disabled=(not cash_account_names[0] != "-"))
+
+            if st.button("💾 保存股票持仓修改", key="save_stocks", disabled=(not cash_account_names[0] != "-")):
                 edited_list = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records')
+                
+                # Auto-fetch currency for new tickers
                 original_map = {s['ticker']: s for s in deepcopy(user_portfolio.get("stocks", []))}
                 invalid_new_tickers = []
-                
                 for holding in edited_list:
                     holding['ticker'] = holding['ticker'].upper()
                     if (holding['ticker'] not in original_map) or (not holding.get('currency')):
@@ -778,40 +722,183 @@ def display_dashboard():
                             holding['currency'] = profile['currency'].upper()
                         else:
                             invalid_new_tickers.append(holding['ticker'])
-                
                 if invalid_new_tickers:
                     st.error(f"以下新增的代码无效或无法获取信息: {', '.join(invalid_new_tickers)}")
                     st.stop()
                 
+                # Diff logic
+                stock_after_df = pd.DataFrame(edited_list).set_index('ticker')
+                diff_df = stock_before_df.merge(stock_after_df, on='ticker', how='outer', suffixes=('_old', '_new'))
+                cash_acct = get_cash_account(cash_account_stock)
+                
+                for ticker, row in diff_df.iterrows():
+                    qty_old = row.get('quantity_old', 0)
+                    qty_new = row.get('quantity_new', 0)
+                    cost_old = row.get('average_cost_old', 0)
+                    cost_new = row.get('average_cost_new', 0)
+                    currency = row.get('currency_new', row.get('currency_old', 'USD'))
+
+                    qty_diff = qty_new - qty_old
+                    
+                    if pd.isna(qty_old): # New holding (Buy)
+                        amount = qty_new * cost_new
+                        cash_acct['balance'] -= (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 买入 {ticker}", "买入股票", amount, cash_acct['currency'], cash_acct['name'], ticker, qty_new)
+                    
+                    elif pd.isna(qty_new): # Sold all (Sell)
+                        current_price = prices.get(ticker, 0)
+                        amount = qty_old * current_price # Sell at market price
+                        realized_pl = (current_price - cost_old) * qty_old
+                        cash_acct['balance'] += (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 卖出 {ticker}", "卖出股票", amount, cash_acct['currency'], cash_acct['name'], ticker, qty_old, realized_pl, currency)
+
+                    elif qty_diff > 0: # Bought more
+                        cost_basis_old = qty_old * cost_old
+                        cost_basis_new = qty_new * cost_new
+                        amount = cost_basis_new - cost_basis_old # Inferred cost
+                        cash_acct['balance'] -= (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 买入 {ticker}", "买入股票", amount, cash_acct['currency'], cash_acct['name'], ticker, qty_diff)
+
+                    elif qty_diff < 0: # Sold some
+                        qty_sold = abs(qty_diff)
+                        current_price = prices.get(ticker, 0)
+                        amount = qty_sold * current_price # Sell at market price
+                        realized_pl = (current_price - cost_old) * qty_sold # P/L based on original avg cost
+                        cash_acct['balance'] += (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 卖出 {ticker}", "卖出股票", amount, cash_acct['currency'], cash_acct['name'], ticker, qty_sold, realized_pl, currency)
+
                 user_portfolio["stocks"] = edited_list
-                if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新！"); time.sleep(1); st.rerun()
+                if save_user_profile(st.session_state.user_email, user_profile): st.success("股票持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
 
         with edit_tabs[3]:
             schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
             df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
-            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
-            num_rows = len(df) + 5
-            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            
+            # Store 'before' state
+            crypto_before_df = df.copy().set_index('symbol')
+
+            calc_height = max(200, (len(df) + 6) * 35 + 3)
             edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
-            if st.button("💾 保存加密货币修改", key="save_crypto"):
+
+            # --- MODIFICATION: Added cash account selector ---
+            cash_account_crypto = st.selectbox("选择关联的现金账户（用于自动流水）", cash_account_names, key="cash_crypto_link", disabled=(not cash_account_names[0] != "-"))
+
+            if st.button("💾 保存加密货币修改", key="save_crypto", disabled=(not cash_account_names[0] != "-")):
                 edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
                 for holding in edited_list: holding['symbol'] = holding['symbol'].upper()
+                
+                # Diff logic
+                crypto_after_df = pd.DataFrame(edited_list).set_index('symbol')
+                diff_df = crypto_before_df.merge(crypto_after_df, on='symbol', how='outer', suffixes=('_old', '_new'))
+                cash_acct = get_cash_account(cash_account_crypto)
+                # Crypto is simpler, avg_cost and prices are all USD
+                
+                for symbol, row in diff_df.iterrows():
+                    qty_old = row.get('quantity_old', 0)
+                    qty_new = row.get('quantity_new', 0)
+                    cost_old = row.get('average_cost_old', 0)
+                    cost_new = row.get('average_cost_new', 0)
+                    currency = "USD" # Crypto cost basis is USD
+
+                    qty_diff = qty_new - qty_old
+                    
+                    if pd.isna(qty_old): # New holding (Buy)
+                        amount = qty_new * cost_new
+                        cash_acct['balance'] -= (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 买入 {symbol}", "买入加密货币", amount, cash_acct['currency'], cash_acct['name'], symbol, qty_new)
+                    
+                    elif pd.isna(qty_new): # Sold all (Sell)
+                        current_price = prices.get(symbol, 0)
+                        amount = qty_old * current_price # Sell at market price
+                        realized_pl = (current_price - cost_old) * qty_old
+                        cash_acct['balance'] += (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 卖出 {symbol}", "卖出加密货币", amount, cash_acct['currency'], cash_acct['name'], symbol, qty_old, realized_pl, currency)
+
+                    elif qty_diff > 0: # Bought more
+                        cost_basis_old = qty_old * cost_old
+                        cost_basis_new = qty_new * cost_new
+                        amount = cost_basis_new - cost_basis_old # Inferred cost
+                        cash_acct['balance'] -= (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 买入 {symbol}", "买入加密货币", amount, cash_acct['currency'], cash_acct['name'], symbol, qty_diff)
+
+                    elif qty_diff < 0: # Sold some
+                        qty_sold = abs(qty_diff)
+                        current_price = prices.get(symbol, 0)
+                        amount = qty_sold * current_price # Sell at market price
+                        realized_pl = (current_price - cost_old) * qty_sold # P/L based on original avg cost
+                        cash_acct['balance'] += (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                        add_transaction(f"[自动] 卖出 {symbol}", "卖出加密货币", amount, cash_acct['currency'], cash_acct['name'], symbol, qty_sold, realized_pl, currency)
+
                 user_portfolio["crypto"] = edited_list
-                if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新！"); time.sleep(1); st.rerun()
+                if save_user_profile(st.session_state.user_email, user_profile): st.success("加密货币持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
         
         with edit_tabs[4]:
             st.info("记录您持有的实物或纸黄金。成本价请以美元/克计价。")
             schema = {'grams': 'float64', 'average_cost_per_gram': 'float64'}
             df = to_df_with_schema(user_portfolio.get("gold",[]), schema)
-            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
-            num_rows = len(df) + 5
-            calc_height = max(200, (num_rows + 1) * 35 + 3)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
-            if st.button("💾 保存黄金持仓修改", key="save_gold"):
-                user_portfolio["gold"] = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
-                if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新！"); time.sleep(1); st.rerun()
+            
+            # Store 'before' state
+            gold_before_df = pd.DataFrame(user_portfolio.get("gold",[])) # Gold is a list of dicts, no unique index
 
-    with tab4:
+            calc_height = max(200, (len(df) + 6) * 35 + 3)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
+            
+            # --- MODIFICATION: Added cash account selector ---
+            cash_account_gold = st.selectbox("选择关联的现金账户（用于自动流水）", cash_account_names, key="cash_gold_link", disabled=(not cash_account_names[0] != "-"))
+            
+            if st.button("💾 保存黄金持仓修改", key="save_gold", disabled=(not cash_account_names[0] != "-")):
+                edited_list = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
+                
+                # Diff logic for Gold (sum based)
+                grams_old = gold_before_df['grams'].sum() if not gold_before_df.empty else 0
+                cost_basis_old = (gold_before_df['grams'] * gold_before_df['average_cost_per_gram']).sum() if not gold_before_df.empty else 0
+                avg_cost_old = (cost_basis_old / grams_old) if grams_old > 0 else 0
+
+                gold_after_df = pd.DataFrame(edited_list)
+                grams_new = gold_after_df['grams'].sum() if not gold_after_df.empty else 0
+                cost_basis_new = (gold_after_df['grams'] * gold_after_df['average_cost_per_gram']).sum() if not gold_after_df.empty else 0
+                avg_cost_new = (cost_basis_new / grams_new) if grams_new > 0 else 0
+
+                cash_acct = get_cash_account(cash_account_gold)
+                currency = "USD" # Gold cost basis is USD
+                qty_diff = grams_new - grams_old
+
+                if qty_diff > 0: # Bought Gold
+                    amount = cost_basis_new - cost_basis_old
+                    cash_acct['balance'] -= (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                    add_transaction(f"[自动] 买入黄金", "买入黄金", amount, cash_acct['currency'], cash_acct['name'], "GOLD (g)", qty_diff)
+                
+                elif qty_diff < 0: # Sold Gold
+                    qty_sold = abs(qty_diff)
+                    current_price = gold_price_per_gram
+                    amount = qty_sold * current_price # Sell at market price
+                    realized_pl = (current_price - avg_cost_old) * qty_sold
+                    cash_acct['balance'] += (amount / exchange_rates.get(currency, 1)) * exchange_rates.get(cash_acct['currency'], 1)
+                    add_transaction(f"[自动] 卖出黄金", "卖出黄金", amount, cash_acct['currency'], cash_acct['name'], "GOLD (g)", qty_sold, realized_pl, currency)
+
+                user_portfolio["gold"] = edited_list
+                if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新，并已自动生成流水！"); time.sleep(1); st.rerun()
+
+        st.subheader("📑 交易流水")
+        transactions = user_profile.get("transactions", [])
+        if transactions:
+            transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
+            # Format columns for better display
+            if 'symbol' not in transactions_df.columns: transactions_df['symbol'] = None
+            if 'quantity' not in transactions_df.columns: transactions_df['quantity'] = None
+            if 'realized_pl' not in transactions_df.columns: transactions_df['realized_pl'] = None
+            
+            display_cols = ["date", "type", "description", "amount", "currency", "account", "symbol", "quantity", "realized_pl"]
+            # Filter out columns that are entirely empty
+            display_cols = [col for col in display_cols if col in transactions_df.columns and not transactions_df[col].isnull().all()]
+            
+            st.table(transactions_df[display_cols])
+        else:
+            st.write("暂无交易记录。")
+
+
+    # --- MODIFICATION: This is now tab3 (formerly tab4) ---
+    with tab3:
         st.subheader("📈 资产历史趋势")
 
         chart_type = st.radio(
@@ -887,7 +974,8 @@ def display_dashboard():
                 )
                 st.plotly_chart(fig, use_container_width=True)
                 
-    with tab5:
+    # --- MODIFICATION: This is now tab4 (formerly tab5) ---
+    with tab4:
         st.subheader("🤖 AI 深度分析")
         st.info("此功能会将您匿名的持仓明细发送给AI进行全面分析，以提供更具洞察力的建议。")
         
@@ -956,4 +1044,5 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
+
 
