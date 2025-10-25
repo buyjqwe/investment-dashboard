@@ -838,31 +838,6 @@ def display_dashboard():
                     'gold_value_usd': '黄金',
                     'cash_value_usd': '现金'
                 }
-                for key, name in categories.items():
-                    fig.add_trace(go.Scatter(
-                        x=plot_df.index,
-                        y=plot_df[key],
-                        mode='lines',
-                        name=name,
-                        hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>{name}: {hovertemplate_prefix}%{{y:,.2f}}{hovertemplate_suffix}<extra></extra>"
-                    ))
-                fig.update_layout(
-                    title_text=f"资产{chart_type}历史趋势",
-                    yaxis_title=yaxis_title,
-                    hovermode="x unified"
-                )
-                st.plotly_chart(fig, use_container_width=True)
-
-                # --- MODIFICATION: Add summary metrics below the chart ---
-                st.subheader("所选周期表现总结")
-                try:
-                categories = {
-                    'net_worth_usd': '总净资产',
-                    'stock_value_usd': '股票',
-                    'crypto_value_usd': '加密货币',
-                    'gold_value_usd': '黄金',
-                    'cash_value_usd': '现金'
-                }
                 
                 # Store colors to match text with lines
                 colors = go.layout.Template().data.layout.colorway
@@ -975,4 +950,5 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
+
 
