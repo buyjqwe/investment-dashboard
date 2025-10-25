@@ -522,20 +522,45 @@ def display_dashboard():
         }]).set_index('date')
 
 
-    st.header("财务状况核心指标")
-    delta_value, delta_str = None, ""
-    if not history_df.empty and len(history_df.index) > 1:
+    st.header("所选周期表现 (核心指标)")
+    if history_df.empty or len(history_df.index) < 2:
+        st.info("历史数据不足（少于2天），无法生成周期表现。显示当前指标。")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🏦 净资产", f"{display_symbol}{net_worth_usd * display_rate:,.2f} {display_curr}")
+        col2.metric("💰 总资产", f"{display_symbol}{total_assets_usd * display_rate:,.2f} {display_curr}")
+        col3.metric("💳 总负债", f"{display_symbol}{total_liabilities_usd * display_rate:,.2f} {display_curr}")
+    else:
         try:
-            start_net_worth_usd = history_df.iloc[0]['net_worth_usd']
-            delta_value = net_worth_usd - start_net_worth_usd
-            delta_str = f"({start_date.strftime('%Y-%m-%d')} 至今)"
-        except (KeyError, IndexError):
-            delta_str = "(无法计算变化)"
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("🏦 净资产", f"{display_symbol}{net_worth_usd * display_rate:,.2f} {display_curr}", delta=f"{display_symbol}{delta_value * display_rate:,.2f} {delta_str}" if delta_value is not None else None)
-    col2.metric("💰 总资产", f"{display_symbol}{total_assets_usd * display_rate:,.2f} {display_curr}")
-    col3.metric("💳 总负债", f"{display_symbol}{total_liabilities_usd * display_rate:,.2f} {display_curr}")
+            start_val_usd = history_df['net_worth_usd'].iloc[0]
+            end_val_usd = history_df['net_worth_usd'].iloc[-1]
+            
+            total_pl_usd = end_val_usd - start_val_usd
+            total_pl_pct = (total_pl_usd / start_val_usd) * 100 if start_val_usd != 0 else 0
+            
+            daily_change_usd = history_df['net_worth_usd'].diff()
+            best_day_usd = daily_change_usd.max()
+            worst_day_usd = daily_change_usd.min()
+
+            m_col1, m_col2, m_col3 = st.columns(3)
+            m_col1.metric("周期初净资产", f"{display_symbol}{start_val_usd * display_rate:,.2f} {display_curr}")
+            m_col2.metric("周期末净资产", f"{display_symbol}{end_val_usd * display_rate:,.2f} {display_curr}")
+            m_col3.metric(f"周期总盈亏 ({display_curr})", 
+                          f"{display_symbol}{total_pl_usd * display_rate:,.2f}",
+                          delta=f"{total_pl_pct:,.2f}%")
+
+            m_col4, m_col5, m_col6 = st.columns(3)
+            m_col4.metric("最佳单日盈利", f"{display_symbol}{best_day_usd * display_rate:,.2f} {display_curr}")
+            m_col5.metric("最大单日亏损", f"{display_symbol}{worst_day_usd * display_rate:,.2f} {display_curr}")
+            # Add back the total liabilities as it's a useful core metric
+            m_col6.metric("💳 当前总负债", f"{display_symbol}{total_liabilities_usd * display_rate:,.2f} {display_curr}")
+
+        except Exception as e:
+            st.warning(f"无法计算周期表现总结: {e}")
+            # Fallback to original display if calculation fails
+            col1, col2, col3 = st.columns(3)
+            col1.metric("🏦 净资产", f"{display_symbol}{net_worth_usd * display_rate:,.2f} {display_curr}")
+            col2.metric("💰 总资产", f"{display_symbol}{total_assets_usd * display_rate:,.2f} {display_curr}")
+            col3.metric("💳 总负债", f"{display_symbol}{total_liabilities_usd * display_rate:,.2f} {display_curr}")
 
     stock_df_data = [{"代码": s['ticker'], "数量": s['quantity'], "货币": s['currency'], "成本价": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{s.get('average_cost', 0):,.2f}", "现价": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{prices.get(s['ticker'], 0):,.2f}", "市值": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{s.get('quantity', 0) * prices.get(s['ticker'], 0):,.2f}", "未实现盈亏": f"{CURRENCY_SYMBOLS.get(s.get('currency', 'USD'), '')}{(s.get('quantity', 0) * prices.get(s['ticker'], 0)) - (s.get('quantity', 0) * s.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((s.get('quantity', 0) * prices.get(s['ticker'], 0)) - (s.get('quantity', 0) * s.get('average_cost', 0))) / (s.get('quantity', 0) * s.get('average_cost', 0)) * 100) if (s.get('quantity', 0) * s.get('average_cost', 0)) > 0 else 0:.2f}%"} for s in stock_holdings]
     crypto_df_data = [{"代码": c['symbol'], "数量": f"{c.get('quantity',0):.6f}", "成本价": f"${c.get('average_cost', 0):,.2f}", "现价": f"${prices.get(c['symbol'], 0):,.2f}", "市值": f"${c.get('quantity', 0) * prices.get(c['symbol'], 0):,.2f}", "未实现盈亏": f"${(c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0)):,.2f}", "回报率(%)": f"{(((c.get('quantity', 0) * prices.get(c['symbol'], 0)) - (c.get('quantity', 0) * c.get('average_cost', 0))) / (c.get('quantity', 0) * c.get('average_cost', 0)) * 100) if (c.get('quantity', 0) * c.get('average_cost', 0)) > 0 else 0:.2f}%"} for c in crypto_holdings]
@@ -831,31 +856,55 @@ def display_dashboard():
                 # --- MODIFICATION: Add summary metrics below the chart ---
                 st.subheader("所选周期表现总结")
                 try:
-                    start_val_usd = history_df['net_worth_usd'].iloc[0]
-                    end_val_usd = history_df['net_worth_usd'].iloc[-1]
-                    
-                    total_pl_usd = end_val_usd - start_val_usd
-                    total_pl_pct = (total_pl_usd / start_val_usd) * 100 if start_val_usd != 0 else 0
-                    
-                    daily_change_usd = history_df['net_worth_usd'].diff()
-                    best_day_usd = daily_change_usd.max()
-                    worst_day_usd = daily_change_usd.min()
+                categories = {
+                    'net_worth_usd': '总净资产',
+                    'stock_value_usd': '股票',
+                    'crypto_value_usd': '加密货币',
+                    'gold_value_usd': '黄金',
+                    'cash_value_usd': '现金'
+                }
+                
+                # Store colors to match text with lines
+                colors = go.layout.Template().data.layout.colorway
+                
+                for i, (key, name) in enumerate(categories.items()):
+                    color = colors[i % len(colors)]
+                    fig.add_trace(go.Scatter(
+                        x=plot_df.index,
+                        y=plot_df[key],
+                        mode='lines',
+                        name=name,
+                        line=dict(color=color), # Assign color
+                        hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>{name}: {hovertemplate_prefix}%{{y:,.2f}}{hovertemplate_suffix}<extra></extra>"
+                    ))
 
-                    m_col1, m_col2, m_col3 = st.columns(3)
-                    m_col1.metric("周期初净资产", f"{display_symbol}{start_val_usd * display_rate:,.2f} {display_curr}")
-                    m_col2.metric("周期末净资产", f"{display_symbol}{end_val_usd * display_rate:,.2f} {display_curr}")
-                    m_col3.metric(f"周期总盈亏 ({display_curr})", 
-                                  f"{display_symbol}{total_pl_usd * display_rate:,.2f}",
-                                  delta=f"{total_pl_pct:,.2f}%")
+                    # --- MODIFICATION: Add text label for the last point ---
+                    last_val = plot_df[key].iloc[-1]
+                    text_label = f"{hovertemplate_prefix}{last_val:,.2f}{hovertemplate_suffix}"
+                    if chart_type == '回报率 (%)':
+                         text_label = f"{last_val:,.2f}{hovertemplate_suffix}"
 
-                    m_col4, m_col5 = st.columns(2)
-                    m_col4.metric("最佳单日盈利", f"{display_symbol}{best_day_usd * display_rate:,.2f} {display_curr}")
-                    m_col5.metric("最大单日亏损", f"{display_symbol}{worst_day_usd * display_rate:,.2f} {display_curr}")
+                    fig.add_trace(go.Scatter(
+                        x=[plot_df.index[-1]],
+                        y=[last_val],
+                        text=[text_label],
+                        mode='text',
+                        textposition='middle right',
+                        textfont=dict(color=color, size=12),
+                        showlegend=False,
+                        hoverinfo='none'
+                    ))
+                
+                fig.update_layout(
+                    title_text=f"资产{chart_type}历史趋势",
+                    yaxis_title=yaxis_title,
+                    hovermode="x unified",
+                    margin=dict(r=100) # Add right margin to make space for text
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-                except Exception as e:
-                    st.warning(f"无法计算周期表现总结: {e}")
-
-
+                # --- MODIFICATION: Remove summary metrics from here ---
+                
     # --- MODIFICATION: Changed from tab6 to tab5 ---
     with tab5:
         st.subheader("🤖 AI 深度分析")
@@ -926,3 +975,4 @@ if not st.session_state.get('logged_in', False):
     st.info("👋 欢迎使用专业投资分析仪表盘，请使用您的邮箱登录或注册。")
 else:
     display_dashboard()
+
