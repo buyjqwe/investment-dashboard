@@ -8,7 +8,7 @@ import json
 from datetime import datetime, timedelta
 import secrets
 import plotly.graph_objects as go
-import plotly.express as px  # <-- ADDED THIS IMPORT
+import plotly.express as px  # Import for colors
 import hashlib
 from copy import deepcopy
 import yfinance as yf
@@ -591,10 +591,11 @@ def display_dashboard():
 
         st.subheader("资产与盈亏明细")
         st.write("📈 **股票持仓**")
-        # --- MODIFICATION: Use dataframe to avoid internal scrollbars ---
-        st.dataframe(pd.DataFrame(stock_df_data), use_container_width=True, hide_index=True)
+        # --- MODIFICATION: Use st.table to remove vertical scrollbar ---
+        st.table(pd.DataFrame(stock_df_data))
         st.write("🥇 **黄金持仓**")
-        st.dataframe(pd.DataFrame(gold_df_data), use_container_width=True, hide_index=True)
+        # --- MODIFICATION: Use st.table to remove vertical scrollbar ---
+        st.table(pd.DataFrame(gold_df_data))
         
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -603,8 +604,8 @@ def display_dashboard():
             st.table(pd.DataFrame([{"账户名称": acc['name'],"货币": acc['currency'], "余额": f"{CURRENCY_SYMBOLS.get(acc['currency'], '')}{acc['balance']:,.2f}"} for acc in cash_accounts]))
         with c2:
             st.write("🪙 **加密货币持仓**")
-            # --- MODIFICATION: Kept dataframe for this complex table ---
-            st.dataframe(pd.DataFrame(crypto_df_data), use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Use st.table to remove vertical scrollbar ---
+            st.table(pd.DataFrame(crypto_df_data))
         with c3:
             st.write("💳 **负债账户**")
             # --- MODIFICATION: Switched to st.table to remove internal scrollbar ---
@@ -715,8 +716,8 @@ def display_dashboard():
         transactions = user_profile.get("transactions", [])
         if transactions:
             transactions_df = pd.DataFrame(transactions).sort_values(by="date", ascending=False)
-            # --- MODIFICATION: Use dataframe to avoid internal scrollbars ---
-            st.dataframe(transactions_df, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Use st.table to remove vertical scrollbar ---
+            st.table(transactions_df)
         else:
             st.write("暂无交易记录。")
     
@@ -737,7 +738,10 @@ def display_dashboard():
         with edit_tabs[0]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("cash_accounts",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
+            num_rows = len(df) + 5  # 5 extra rows for dynamic adding
+            calc_height = max(200, (num_rows + 1) * 35 + 3) # (rows + header) * px_per_row + border
+            edited_df = st.data_editor(df, num_rows="dynamic", key="cash_editor_adv", column_config={"name": "账户名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("余额", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
             if st.button("💾 保存现金账户修改", key="save_cash"):
                 user_portfolio["cash_accounts"] = edited_df.dropna(subset=['name']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("现金账户已更新！"); time.sleep(1); st.rerun()
@@ -745,7 +749,10 @@ def display_dashboard():
         with edit_tabs[1]:
             schema = {'name': 'object', 'currency': 'object', 'balance': 'float64'}
             df = to_df_with_schema(user_portfolio.get("liabilities",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
+            num_rows = len(df) + 5
+            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="liabilities_editor_adv", column_config={"name": "名称", "currency": st.column_config.SelectboxColumn("货币", options=SUPPORTED_CURRENCIES, required=True), "balance": st.column_config.NumberColumn("金额", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
             if st.button("💾 保存负债账户修改", key="save_liabilities"):
                 user_portfolio["liabilities"] = edited_df.dropna(subset=['name']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("负债账户已更新！"); time.sleep(1); st.rerun()
@@ -753,7 +760,10 @@ def display_dashboard():
         with edit_tabs[2]:
             schema = {'ticker': 'object', 'quantity': 'float64', 'average_cost': 'float64', 'currency': 'object'}
             df = to_df_with_schema(user_portfolio.get("stocks",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", help="将自动获取，无需填写", disabled=True)}, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
+            num_rows = len(df) + 5
+            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="stock_editor_adv", column_config={"ticker": st.column_config.TextColumn("代码", help="请输入Yahoo Finance格式的代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.4f", required=True), "average_cost": st.column_config.NumberColumn("平均成本", help="请以该股票的交易货币计价", format="%.2f", required=True), "currency": st.column_config.TextColumn("货币", help="将自动获取，无需填写", disabled=True)}, use_container_width=True, hide_index=True, height=calc_height)
             if st.button("💾 保存股票持仓修改", key="save_stocks"):
                 edited_list = edited_df.dropna(subset=['ticker', 'quantity', 'average_cost']).to_dict('records')
                 original_map = {s['ticker']: s for s in deepcopy(user_portfolio.get("stocks", []))}
@@ -779,7 +789,10 @@ def display_dashboard():
         with edit_tabs[3]:
             schema = {'symbol': 'object', 'quantity': 'float64', 'average_cost': 'float64'}
             df = to_df_with_schema(user_portfolio.get("crypto",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
+            num_rows = len(df) + 5
+            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="crypto_editor_adv", column_config={"symbol": st.column_config.TextColumn("代码", required=True), "quantity": st.column_config.NumberColumn("数量", format="%.8f", required=True), "average_cost": st.column_config.NumberColumn("平均成本 (USD)", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
             if st.button("💾 保存加密货币修改", key="save_crypto"):
                 edited_list = edited_df.dropna(subset=['symbol', 'quantity', 'average_cost']).to_dict('records')
                 for holding in edited_list: holding['symbol'] = holding['symbol'].upper()
@@ -790,7 +803,10 @@ def display_dashboard():
             st.info("记录您持有的实物或纸黄金。成本价请以美元/克计价。")
             schema = {'grams': 'float64', 'average_cost_per_gram': 'float64'}
             df = to_df_with_schema(user_portfolio.get("gold",[]), schema)
-            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True, hide_index=True)
+            # --- MODIFICATION: Dynamically calculate height to remove scrollbar ---
+            num_rows = len(df) + 5
+            calc_height = max(200, (num_rows + 1) * 35 + 3)
+            edited_df = st.data_editor(df, num_rows="dynamic", key="gold_editor_adv", column_config={"grams": st.column_config.NumberColumn("克数 (g)", format="%.3f", required=True), "average_cost_per_gram": st.column_config.NumberColumn("平均成本 ($/g)", format="%.2f", required=True)}, use_container_width=True, hide_index=True, height=calc_height)
             if st.button("💾 保存黄金持仓修改", key="save_gold"):
                 user_portfolio["gold"] = edited_df.dropna(subset=['grams', 'average_cost_per_gram']).to_dict('records')
                 if save_user_profile(st.session_state.user_email, user_profile): st.success("黄金持仓已更新！"); time.sleep(1); st.rerun()
@@ -833,7 +849,6 @@ def display_dashboard():
                 }
                 
                 # Store colors to match text with lines
-                # --- MODIFICATION: Fixed AttributeError ---
                 colors = px.colors.qualitative.Plotly
                 
                 for i, (key, name) in enumerate(categories.items()):
@@ -847,7 +862,7 @@ def display_dashboard():
                         hovertemplate=f"日期: %{{x|%Y-%m-%d}}<br>{name}: {hovertemplate_prefix}%{{y:,.2f}}{hovertemplate_suffix}<extra></extra>"
                     ))
 
-                    # --- MODIFICATION: Add text label for the last point ---
+                    # Add text label for the last point
                     last_val = plot_df[key].iloc[-1]
                     text_label = f"{hovertemplate_prefix}{last_val:,.2f}{hovertemplate_suffix}"
                     if chart_type == '回报率 (%)':
@@ -871,10 +886,7 @@ def display_dashboard():
                     margin=dict(r=100) # Add right margin to make space for text
                 )
                 st.plotly_chart(fig, use_container_width=True)
-
-                # --- MODIFICATION: Removed summary metrics from here ---
                 
-    # --- MODIFICATION: Changed from tab6 to tab5 ---
     with tab5:
         st.subheader("🤖 AI 深度分析")
         st.info("此功能会将您匿名的持仓明细发送给AI进行全面分析，以提供更具洞察力的建议。")
